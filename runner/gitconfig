@@ -1,0 +1,11 @@
+[safe]
+	directory = *
+[user]
+	name = swe-pilot worker
+	email = swe-pilot@localhost
+[init]
+	defaultBranch = main
+[advice]
+	detachedHead = false
+[core]
+	pager = cat

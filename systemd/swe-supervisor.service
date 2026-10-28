@@ -1,0 +1,28 @@
+[Unit]
+Description=swe-pilot supervisor (deterministic job state machine; one active runner)
+After=swe-broker.service docker.service
+Wants=swe-broker.service
+
+[Service]
+Type=simple
+User=swe
+Group=swe
+SupplementaryGroups=docker
+Environment=PYTHONUNBUFFERED=1
+Environment=HOME=/var/lib/swe-pilot
+ExecStart=/usr/bin/python3 /opt/swe-pilot/swe_pilot/supervisor.py
+Restart=always
+RestartSec=5
+# Containers are owned by dockerd, not this cgroup: stopping the supervisor leaves runners
+# alive so a restart can reattach to them.
+KillMode=mixed
+TimeoutStopSec=20
+UMask=0002
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+ReadWritePaths=/var/lib/swe-pilot
+
+[Install]
+WantedBy=multi-user.target

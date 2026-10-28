@@ -1,0 +1,27 @@
+id = "example"
+name = "Example project"
+enabled = true
+base_branch = "main"
+
+[source]
+path = "/srv/projects/example"
+owner = "developer"
+
+[harness]
+default = "mock"
+allowed = ["mock"]
+models = []
+
+[publish]
+local_branch = false
+remote_push = false
+draft_pr = false
+
+[orchestrator]
+enabled = false
+merge = "none"
+push = false
+brief = "orchestrator.md"
+task_model = ""
+max_tasks_per_day = 2
+max_open_reviews = 1

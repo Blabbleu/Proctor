@@ -1,0 +1,18 @@
+[Unit]
+Description=swe-pilot broker (model credential gateway with budget/quota enforcement, repo publisher, notifier)
+After=swe-firewall.service docker.service network-online.target
+Requires=swe-firewall.service
+
+[Service]
+Type=simple
+User=root
+
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/usr/local/lib/hermes-agent/venv/bin/python /opt/swe-pilot/swe_pilot/broker.py
+Restart=always
+RestartSec=5
+UMask=0007
+# Only one copy: systemd guarantees a single instance per unit.
+
+[Install]
+WantedBy=multi-user.target

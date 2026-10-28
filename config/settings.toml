@@ -1,0 +1,16 @@
+# Offline mock-only defaults. Live models require explicit approved models,
+# operator-supplied price entries and positive spending ceilings.
+timezone = "UTC"
+
+[budget]
+per_task_usd = 0
+per_day_usd = 0
+per_month_usd = 0
+
+[prices]
+
+[quota]
+enabled = false
+
+[review]
+enabled = false
