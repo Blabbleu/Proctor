@@ -1,15 +1,49 @@
-# Offline mock-only defaults. Live models require explicit approved models,
-# operator-supplied price entries and positive spending ceilings.
+# proctor settings. Everything has a default (proctor/common.py SETTINGS_DEFAULTS), so this file
+# only needs what you change. Fresh installs run the scripted mock harness with no credentials.
+# Live models require an installed harness binary, an approved + priced model, and positive
+# spending ceilings.
 timezone = "UTC"
 
 [budget]
+# Hard ceilings enforced by the gateway (USD, estimated from [prices]). 0 refuses every model call.
 per_task_usd = 0
 per_day_usd = 0
 per_month_usd = 0
 
 [prices]
+# USD per million tokens. A model can only run if it is priced here and listed in the project's
+# [harness].models. Check your provider's current pricing; these keys are examples only.
+# "claude-sonnet-*" = { input = 3.0, output = 15.0, cache_read = 0.3, cache_write = 3.75 }
+
+[credentials]
+# env:    API keys from /etc/proctor/credentials.env (ANTHROPIC_API_KEY, OPENAI_API_KEY).
+# hermes: subscription credentials, quota readings and notifications via Hermes Agent
+#         (install with: sudo ./install.sh --hermes).
+anthropic = "env"
+openai = "env"
+
+[harness]
+# Absolute paths to operator-installed harness binaries; leave empty for mock-only use.
+claude_binary = ""
+codex_binary = ""
+
+[gateway]
+# Worker-facing model gateway. bin/proctor-firewall reads these same values.
+# Change subnet/bind if 172.31.250.0/24 collides with a network on this host.
+bind = "172.31.250.1"
+port = 18780
+network = "proctor-gw"
+subnet = "172.31.250.0/24"
+interface = "proctor-gw0"
+
+[notify]
+# none | webhook (POSTs {"text": ..., "content": ...} — Slack/Discord-style) | hermes (`hermes send`)
+method = "none"
+url = ""
+target = ""
 
 [quota]
+# Subscription-window guard; readings exist only with [credentials] = "hermes".
 enabled = false
 
 [review]

@@ -100,7 +100,7 @@ inherit = "core"
 exclude = ["PROCTOR_GATEWAY_TOKEN", "*TOKEN*", "*KEY*", "*SECRET*"]
 
 [model_providers.proctorgw]
-name = "proctor gateway (ChatGPT subscription)"
+name = "proctor gateway"
 base_url = "$PROCTOR_GATEWAY_URL"
 env_key = "PROCTOR_GATEWAY_TOKEN"
 wire_api = "responses"

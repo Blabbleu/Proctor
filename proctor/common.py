@@ -39,9 +39,54 @@ def new_job_id() -> str:
     return "j" + time.strftime("%m%d") + "-" + secrets.token_hex(3)
 
 
+# Defaults for every settings.toml table the services read, so a minimal file is enough to start.
+# The gateway values must match bin/proctor-firewall, which reads them via `proctor/common.py gateway-env`.
+SETTINGS_DEFAULTS = {
+    "timezone": "UTC",
+    "budget": {"per_task_usd": 0, "per_day_usd": 0, "per_month_usd": 0},
+    "prices": {},
+    "gateway": {"bind": "172.31.250.1", "port": 18780, "network": "proctor-gw",
+                "subnet": "172.31.250.0/24", "interface": "proctor-gw0"},
+    "runner": {"uid": 10001, "min_free_disk_gb": 5},
+    "harness": {"claude_binary": "", "codex_binary": ""},
+    # env: ANTHROPIC_API_KEY / OPENAI_API_KEY from the broker's environment (/etc/proctor/credentials.env).
+    # hermes: subscription OAuth credentials, quota and notifications through a Hermes Agent install.
+    "credentials": {"anthropic": "env", "openai": "env"},
+    "hermes": {"agent_dir": "/usr/local/lib/hermes-agent", "bin": "/usr/local/bin/hermes"},
+    # method: none | webhook (POST JSON {"text", "content"} to url) | hermes (`hermes send -t target`)
+    "notify": {"method": "none", "url": "", "target": ""},
+}
+CREDENTIAL_SOURCES = ("env", "hermes")
+NOTIFY_METHODS = ("none", "webhook", "hermes")
+
+
+def _fill(d: dict, defaults: dict) -> dict:
+    for k, v in defaults.items():
+        if isinstance(v, dict):
+            if not isinstance(d.get(k, {}), dict):
+                raise ValueError(f"settings.toml: [{k}] must be a table")
+            _fill(d.setdefault(k, {}), v)
+        else:
+            d.setdefault(k, v)
+    return d
+
+
 def load_settings() -> dict:
     with open(ETC / "settings.toml", "rb") as fh:
-        return tomllib.load(fh)
+        raw = tomllib.load(fh)
+    # Older files set only [notify].target, which always meant a Hermes delivery target.
+    n = raw.get("notify")
+    if isinstance(n, dict) and n.get("target") and "method" not in n:
+        n["method"] = "hermes"
+    s = _fill(raw, SETTINGS_DEFAULTS)
+    for k in ("anthropic", "openai"):
+        if s["credentials"][k] not in CREDENTIAL_SOURCES:
+            raise ValueError(f"settings.toml: [credentials].{k} must be one of {CREDENTIAL_SOURCES}")
+    if s["notify"]["method"] not in NOTIFY_METHODS:
+        raise ValueError(f"settings.toml: [notify].method must be one of {NOTIFY_METHODS}")
+    if s["notify"]["method"] == "webhook" and not re.match(r"^https?://", s["notify"]["url"]):
+        raise ValueError("settings.toml: [notify].url must be an http(s) URL for method = \"webhook\"")
+    return s
 
 
 class ProjectError(ValueError):
@@ -325,3 +370,24 @@ def read_small(path: Path, max_bytes: int = 1_000_000) -> str | None:
         return None
     with os.fdopen(fd, "rb") as fh:
         return fh.read(max_bytes).decode("utf-8", "replace")
+
+
+def gateway_env(settings: dict) -> str:
+    """Shell assignments for bin/proctor-firewall, so the firewall and the gateway share one source of truth."""
+    import ipaddress
+    import shlex
+    gw = settings["gateway"]
+    net = ipaddress.ip_network(gw["subnet"])
+    if ipaddress.ip_address(gw["bind"]) not in net:
+        raise ValueError(f"[gateway].bind {gw['bind']} is outside [gateway].subnet {gw['subnet']}")
+    if not re.match(r"^[a-z0-9][a-z0-9_.-]{0,14}$", gw["interface"]):
+        raise ValueError(f"[gateway].interface {gw['interface']!r} is not a valid interface name")
+    vals = {"NET": gw["network"], "IF": gw["interface"], "SUBNET": str(net), "GW": gw["bind"], "PORT": int(gw["port"])}
+    return "\n".join(f"{k}={shlex.quote(str(v))}" for k, v in vals.items())
+
+
+if __name__ == "__main__":
+    import sys
+    if sys.argv[1:] != ["gateway-env"]:
+        sys.exit("usage: common.py gateway-env")
+    print(gateway_env(load_settings()))

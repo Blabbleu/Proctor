@@ -4,7 +4,11 @@
 #  * INPUT filter: from proctor-gw0 only the gateway port on the bridge IP is reachable;
 #    every other host service (dashboard, web UI, ssh, ...) is dropped.
 set -euo pipefail
-NET=proctor-gw; IF=proctor-gw0; SUBNET=172.31.250.0/24; GW=172.31.250.1; PORT=18780
+# Network values come from [gateway] in settings.toml (defaults in proctor/common.py) so the
+# firewall can never disagree with the address the gateway binds and workers are pointed at.
+APP=${PROCTOR_APP:-/opt/proctor}
+eval "$(python3 -I "$APP/proctor/common.py" gateway-env)"
+: "${NET:?}" "${IF:?}" "${SUBNET:?}" "${GW:?}" "${PORT:?}"
 if ! docker network inspect "$NET" >/dev/null 2>&1; then
   docker network create --internal --driver bridge --subnet "$SUBNET" --gateway "$GW" \
     -o com.docker.network.bridge.name="$IF" -o com.docker.network.bridge.enable_icc=false \

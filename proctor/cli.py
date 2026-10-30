@@ -1,4 +1,4 @@
-"""`proctor` command-line interface: submit / status / list / logs / cancel / retry / usage / projects / doctor.
+"""`proctor` command-line interface: submit / status / list / logs / cancel / retry / usage / projects / project add / doctor.
 
 Works for root and members of group `proctor`. Writes only to the job store; the supervisor does the work.
 """
@@ -7,13 +7,14 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import pwd
 import subprocess
 import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from proctor import db, harness  # noqa: E402
-from proctor.common import (ACTIVE, JOB_ID_RE, STATE, TERMINAL, ProjectError, iso, list_projects,  # noqa: E402
+from proctor.common import (ACTIVE, ETC, JOB_ID_RE, PROJECT_ID_RE, STATE, TERMINAL, ProjectError, iso, list_projects,  # noqa: E402
                               load_project, load_settings, model_allowed, new_job_id, now, tail_text,
                               PROVIDER_LABEL, QUOTA_ROW, provider_for, role_model)
 from proctor.broker import quota_block_reason, remaining_allowance  # noqa: E402
@@ -54,6 +55,9 @@ def cmd_submit(a, conn):
         sys.exit(f"unknown harness {hname}; available: {', '.join(harness.ADAPTERS)}")
     if hname != "mock" and hname not in p["harness"]["allowed"]:
         sys.exit(f"harness {hname} not allowed for {p['id']} (allowed: {p['harness']['allowed']})")
+    binkey = {"claude-code": "claude_binary", "codex": "codex_binary"}.get(hname)
+    if binkey and not settings["harness"][binkey]:
+        sys.exit(f"harness {hname} is not installed: set [harness].{binkey} in settings.toml")
     model = a.model or (p["harness"].get("default_model") if hname != "mock" else "mock")
     if hname != "mock" and not a.model:
         model = (p["harness"].get("default_models") or {}).get(hname) or model
@@ -257,27 +261,132 @@ def cmd_projects(a, conn):
 
 
 def cmd_doctor(a, conn):
+    """Health report. BAD fails the exit code; WARN is something to fix before real (non-mock) work."""
     ok = True
 
-    def chk(name, cond, detail=""):
+    def chk(name, cond, detail="", warn=False, hint=""):
         nonlocal ok
-        ok &= bool(cond)
-        print(f"{'ok ' if cond else 'BAD'} {name}" + (f" — {detail}" if detail else ""))
-    for svc in ("proctor-supervisor", "proctor-broker"):
+        if not cond and not warn:
+            ok = False
+        detail = detail if cond or not hint else hint
+        print(f"{'ok  ' if cond else ('WARN' if warn else 'BAD ')} {name}" + (f" — {detail}" if detail else ""))
+    for svc in ("proctor-firewall", "proctor-broker", "proctor-supervisor"):
         r = subprocess.run(["systemctl", "is-active", svc], capture_output=True, text=True)
         chk(f"service {svc}", r.stdout.strip() == "active", r.stdout.strip())
-    s = load_settings()
+    try:
+        s = load_settings()
+        chk("settings.toml", True)
+    except Exception as e:
+        chk("settings.toml", False, str(e))
+        sys.exit(1)
+    r = subprocess.run(["docker", "network", "inspect", s["gateway"]["network"]], capture_output=True, text=True)
+    chk(f"docker network {s['gateway']['network']}", r.returncode == 0, (r.stderr.strip() or "")[:200])
+    if os.geteuid() == 0:
+        r = subprocess.run(["iptables", "-C", "INPUT", "-i", s["gateway"]["interface"], "-j", "PROCTOR-GW-IN"],
+                           capture_output=True, text=True)
+        chk("firewall chain PROCTOR-GW-IN", r.returncode == 0, hint="run: systemctl restart proctor-firewall")
+    for key, prov in (("claude_binary", "anthropic"), ("codex_binary", "openai")):
+        path = s["harness"][key]
+        if path:
+            chk(f"harness {key}", os.access(path, os.X_OK), path)
+            src = s["credentials"][prov]
+            if src == "env":
+                var = "ANTHROPIC_API_KEY" if prov == "anthropic" else "OPENAI_API_KEY"
+                chk(f"{prov} credential", _env_file_has(var), hint=f"set {var} in {ETC / 'credentials.env'}", warn=True)
+            else:
+                chk(f"{prov} credential", Path(s["hermes"]["agent_dir"]).is_dir(), f"hermes at {s['hermes']['agent_dir']}")
+        else:
+            chk(f"harness {key}", False, hint="not set; only the mock harness can run", warn=True)
     b = s["budget"]
-    chk("spending ceiling configured", b.get("per_task_usd", 0) > 0 and b.get("per_day_usd", 0) > 0, f"task ${b.get('per_task_usd')} day ${b.get('per_day_usd')} month ${b.get('per_month_usd')}")
+    chk("spending ceiling configured", b.get("per_task_usd", 0) > 0 and b.get("per_day_usd", 0) > 0,
+        f"task ${b.get('per_task_usd')} day ${b.get('per_day_usd')} month ${b.get('per_month_usd')}", warn=True)
     a_ = conn.execute(f"SELECT COUNT(*) FROM jobs WHERE state IN ({','.join('?' * len(ACTIVE))})", ACTIVE).fetchone()[0]
     chk("at most one active job", a_ <= 1, f"{a_} active")
-    for pid in list_projects():
+    pids = list_projects()
+    chk("projects registered", bool(pids), ", ".join(pids), hint="add one: proctor project add <id> --path /path/to/repo", warn=True)
+    for pid in pids:
         try:
-            load_project(pid)
-            chk(f"project {pid}", True)
+            p = load_project(pid)
+            chk(f"project {pid}", Path(p["source"]["path"]).is_dir(), hint=f"source {p['source']['path']} missing")
         except Exception as e:
             chk(f"project {pid}", False, str(e))
     sys.exit(0 if ok else 1)
+
+
+def _env_file_has(var):
+    """Whether credentials.env sets var to a non-empty value (unreadable counts as unknown -> False)."""
+    try:
+        text = (ETC / "credentials.env").read_text()
+    except OSError:
+        return False
+    return any(line.split("=", 1)[0].strip() == var and line.split("=", 1)[1].strip().strip("\"'")
+               for line in text.splitlines() if "=" in line and not line.lstrip().startswith("#"))
+
+
+def _git_head_branch(repo: Path) -> str | None:
+    """Current branch from .git/HEAD, read as a file so root never runs git inside another user's repo."""
+    try:
+        head = (repo / ".git" / "HEAD").read_text().strip()
+    except OSError:
+        return None
+    return head.removeprefix("ref: refs/heads/") if head.startswith("ref: refs/heads/") else None
+
+
+def _toml_str(v: str) -> str:
+    return json.dumps(v)   # a JSON string is a valid TOML basic string
+
+
+def cmd_project_add(a, conn):
+    if not PROJECT_ID_RE.match(a.id):
+        sys.exit(f"invalid project id {a.id!r} (lowercase letters, digits, '-')")
+    repo = Path(a.path).resolve()
+    if not (repo / ".git").exists():
+        sys.exit(f"{repo} is not a git repository")
+    owner = a.owner or pwd.getpwuid(repo.stat().st_uid).pw_name
+    if owner == "root":
+        sys.exit(f"{repo} is owned by root; proctor needs a non-root repository owner (--owner)")
+    branch = a.branch or _git_head_branch(repo)
+    if not branch:
+        sys.exit("could not read the current branch; pass --branch")
+    checks = []
+    for c in a.check or []:
+        name, sep, command = c.partition("=")
+        if not sep or not command.strip():
+            sys.exit(f"--check must look like name=command, got {c!r}")
+        checks.append((name.strip(), command.strip()))
+    if a.harness != "mock" and not a.model:
+        sys.exit(f"--harness {a.harness} needs --model (and a [prices] entry for it in settings.toml)")
+    d = ETC / "projects" / a.id
+    if (d / "project.toml").exists() and not a.force:
+        sys.exit(f"project {a.id} already exists at {d} (use --force to overwrite project.toml)")
+    allowed = sorted({a.harness, "mock"})
+    lines = [f"id = {_toml_str(a.id)}", f"name = {_toml_str(a.name or a.id)}", "enabled = true",
+             f"base_branch = {_toml_str(branch)}", "",
+             "[source]", f"path = {_toml_str(str(repo))}", f"owner = {_toml_str(owner)}", "",
+             "[harness]", f"default = {_toml_str(a.harness)}", f"allowed = {json.dumps(allowed)}",
+             f"models = {json.dumps([a.model] if a.model else [])}"]
+    if a.model:
+        lines.append(f"default_model = {_toml_str(a.model)}")
+    lines += ["", "[publish]", "# A reviewable proctor/<job> branch in the source repo; nothing is pushed.",
+              "local_branch = true", "remote_push = false", "draft_pr = false", "",
+              "[orchestrator]", "enabled = false", 'merge = "none"', "push = false"]
+    for name, command in checks:
+        lines += ["", "[[checks]]", f"name = {_toml_str(name)}", f"command = {_toml_str(command)}"]
+    d.mkdir(parents=True, exist_ok=True)
+    (d / "project.toml").write_text("\n".join(lines) + "\n")
+    if not (d / "Dockerfile").exists():
+        (d / "Dockerfile").write_text("ARG BASE\nFROM ${BASE}\n# Install the project's build/test dependencies here: checks and workers run offline.\n")
+    if not (d / "orchestrator.md").exists():
+        (d / "orchestrator.md").write_text(f"# {a.name or a.id}\n\nDescribe the project's goals and constraints here before enabling orchestration.\n")
+    try:
+        load_project(a.id)
+    except ProjectError as e:
+        sys.exit(f"wrote {d / 'project.toml'} but it does not validate: {e}")
+    print(f"registered {a.id}: {repo} (owner {owner}, base {branch}, harness {a.harness})")
+    if not checks:
+        print("note: no checks registered; add [[checks]] (or re-run with --check name=command) so candidates are validated")
+    print(f"dependencies: edit {d / 'Dockerfile'} — runners have no network at check time")
+    print(f"try it:  proctor submit {a.id} 'Describe a small change' -a 'what done looks like' --harness mock")
 
 
 def main():
@@ -320,6 +429,17 @@ def main():
     sp.add_parser("usage")
     sp.add_parser("projects")
     sp.add_parser("doctor")
+    pj = sp.add_parser("project", help="register projects").add_subparsers(dest="project_cmd", required=True)
+    pa = pj.add_parser("add", help="register a git repository as a project")
+    pa.add_argument("id")
+    pa.add_argument("--path", required=True, help="the source repository")
+    pa.add_argument("--owner", help="non-root user that owns the repository (default: the directory's owner)")
+    pa.add_argument("--branch", help="base branch (default: the repository's current branch)")
+    pa.add_argument("--name")
+    pa.add_argument("--check", action="append", metavar="NAME=COMMAND", help="validation check (repeatable)")
+    pa.add_argument("--harness", default="mock", choices=sorted(harness.ADAPTERS))
+    pa.add_argument("--model", help="model for a real harness (must also be priced in settings.toml)")
+    pa.add_argument("--force", action="store_true", help="overwrite an existing project.toml")
     o = sp.add_parser("orch", help="orchestrator tools (gate/context/review/submit/merge/...); see `proctor orch -h`")
     from proctor import orch  # noqa: E402  (only the orch sub-commands depend on it)
     orch.add_parsers(o.add_subparsers(dest="orch_cmd", required=True, metavar="COMMAND"))
@@ -329,7 +449,8 @@ def main():
     if a.cmd == "orch":
         return orch.dispatch(a, conn)
     {"submit": cmd_submit, "list": cmd_list, "status": cmd_status, "logs": cmd_logs, "cancel": cmd_cancel,
-     "retry": cmd_retry, "usage": cmd_usage, "projects": cmd_projects, "doctor": cmd_doctor}[a.cmd](a, conn)
+     "retry": cmd_retry, "usage": cmd_usage, "projects": cmd_projects, "doctor": cmd_doctor,
+     "project": cmd_project_add}[a.cmd](a, conn)
 
 
 if __name__ == "__main__":

@@ -8,7 +8,10 @@ Type=simple
 User=root
 
 Environment=PYTHONUNBUFFERED=1
-ExecStart=/usr/local/lib/hermes-agent/venv/bin/python /opt/proctor/proctor/broker.py
+# API keys for [credentials] = "env" (ANTHROPIC_API_KEY=..., OPENAI_API_KEY=...); root-only, mode 0600.
+EnvironmentFile=-/etc/proctor/credentials.env
+# For [credentials] = "hermes", install.sh --hermes adds a drop-in that runs this under Hermes' interpreter.
+ExecStart=/usr/bin/python3 /opt/proctor/proctor/broker.py
 Restart=always
 RestartSec=5
 UMask=0007

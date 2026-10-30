@@ -36,6 +36,7 @@ import tempfile
 import threading
 import time
 import traceback
+import urllib.request
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -45,23 +46,45 @@ from proctor.common import (PROVIDER_LABEL, QUOTA_ROW, STATE, TERMINAL, WORKER_S
                               read_small, usage_cost)
 
 log = logging.getLogger("proctor-broker")
-HERMES_AGENT = "/usr/local/lib/hermes-agent"
 
 
 # --------------------------------------------------------------------------- credentials
-class Upstream:
-    """Anthropic subscription credentials resolved through Hermes' own resolver (with its locking/refresh)."""
+# [credentials] picks a source per provider:
+#   env    — an API key from the broker's environment (ANTHROPIC_API_KEY / OPENAI_API_KEY), sent to the
+#            public APIs with standard API-key auth. The default; needs nothing else installed.
+#   hermes — subscription OAuth credentials through a Hermes Agent install (its locking/refresh), sent
+#            the way the Claude Code / Codex subscription clients send them. Also enables quota readings.
+def credential_source(settings, provider):
+    return settings["credentials"]["anthropic" if provider == "anthropic" else "openai"]
 
-    def __init__(self):
-        if HERMES_AGENT not in sys.path:
-            sys.path.insert(0, HERMES_AGENT)
+
+def _hermes_path(settings):
+    d = settings["hermes"]["agent_dir"]
+    if d not in sys.path:
+        sys.path.insert(0, d)
+
+
+class Upstream:
+    """Anthropic credentials: an API key from the environment, or the Claude subscription through Hermes."""
+    host = "api.anthropic.com"
+
+    def __init__(self, settings):
+        self.source = settings["credentials"]["anthropic"]
+        self.oauth = self.source == "hermes"
+        if self.oauth:
+            _hermes_path(settings)
         self._tok = None
         self._at = 0.0
         self._lock = threading.Lock()
 
+    def auth_headers(self, tok):
+        return {"authorization": "Bearer " + tok} if self.oauth else {"x-api-key": tok}
+
     def token(self, force=False):
         """Hermes pool select() is the same path Hermes' own API calls use: it refreshes an expiring
         OAuth token under Hermes' cross-process auth lock. Fall back to the read-only resolver."""
+        if not self.oauth:
+            return os.environ.get("ANTHROPIC_API_KEY", "").strip() or None
         with self._lock:
             if force or not self._tok or now() - self._at > 120:
                 tok = None
@@ -86,16 +109,24 @@ class Upstream:
 
 
 class CodexUpstream:
-    """ChatGPT/Codex subscription credentials via Hermes' own resolver (locking + refresh)."""
+    """OpenAI credentials: an API key for the public Responses API, or the ChatGPT/Codex subscription
+    via Hermes' own resolver (locking + refresh) against the Codex backend."""
 
-    def __init__(self):
-        if HERMES_AGENT not in sys.path:
-            sys.path.insert(0, HERMES_AGENT)
+    def __init__(self, settings):
+        self.source = settings["credentials"]["openai"]
+        self.oauth = self.source == "hermes"
+        if self.oauth:
+            _hermes_path(settings)
+            self.host, self.path = "chatgpt.com", "/backend-api/codex/responses"
+        else:
+            self.host, self.path = "api.openai.com", "/v1/responses"
         self._tok = None
         self._at = 0.0
         self._lock = threading.Lock()
 
     def token(self, force=False):
+        if not self.oauth:
+            return os.environ.get("OPENAI_API_KEY", "").strip() or None
         with self._lock:
             if force or not self._tok or now() - self._at > 120:
                 tok = None
@@ -110,6 +141,8 @@ class CodexUpstream:
             return self._tok
 
     def headers(self, tok):
+        if not self.oauth:
+            return {"authorization": "Bearer " + tok}
         from agent.codex_headers import codex_account_headers
         h = {"authorization": "Bearer " + tok, "originator": "codex_exec",
              "user-agent": "codex_exec/0.161.0 (proctor)"}
@@ -318,18 +351,19 @@ class Gateway(http.server.BaseHTTPRequestHandler):
             "host", "authorization", "x-api-key", "content-length", "connection", "accept-encoding",
             "proxy-authorization", "cookie")}
         betas = [b for b in hdrs.pop("anthropic-beta", "").split(",") if b]
-        if "oauth-2025-04-20" not in betas:
+        if UP.oauth and "oauth-2025-04-20" not in betas:
             betas.append("oauth-2025-04-20")
-        hdrs["anthropic-beta"] = ",".join(betas)
+        if betas:
+            hdrs["anthropic-beta"] = ",".join(betas)
         hdrs["accept-encoding"] = "identity"
         usage = {"input": 0, "output": 0, "cache_read": 0, "cache_write": 0}
         status, got_usage, q = None, False, None
         for attempt in (0, 1):
             tokv = UP.token(force=attempt == 1)
             if not tokv:
-                return self._block(conn, job["id"], tok["attempt_id"], "auth", "no subscription credential available", code=400)
-            hdrs["authorization"] = "Bearer " + tokv
-            c = http.client.HTTPSConnection("api.anthropic.com", timeout=600, context=ssl.create_default_context())
+                return self._block(conn, job["id"], tok["attempt_id"], "auth", "no Anthropic credential available", code=400)
+            hdrs.update(UP.auth_headers(tokv))
+            c = http.client.HTTPSConnection(UP.host, timeout=600, context=ssl.create_default_context())
             c.request("POST", self.path, body=raw, headers=hdrs)
             r = c.getresponse()
             status = r.status
@@ -340,7 +374,7 @@ class Gateway(http.server.BaseHTTPRequestHandler):
             break
         if status == 401:
             r.read()
-            return self._block(conn, job["id"], tok["attempt_id"], "auth", "upstream rejected subscription credential (401)")
+            return self._block(conn, job["id"], tok["attempt_id"], "auth", "upstream rejected Anthropic credential (401)")
         q = record_quota(conn, r.getheaders(), provider="anthropic")
         self.send_response(status)
         for k, v in r.getheaders():
@@ -407,10 +441,10 @@ class Gateway(http.server.BaseHTTPRequestHandler):
         for attempt in (0, 1):
             tokv = CODEX.token(force=attempt == 1)
             if not tokv:
-                return self._block(conn, job["id"], tok["attempt_id"], "auth", "no ChatGPT subscription credential available")
+                return self._block(conn, job["id"], tok["attempt_id"], "auth", "no OpenAI credential available")
             hdrs = {**passthrough, **CODEX.headers(tokv), "accept-encoding": "identity"}
-            c = http.client.HTTPSConnection("chatgpt.com", timeout=600, context=ssl.create_default_context())
-            c.request("POST", "/backend-api/codex/responses", body=raw, headers=hdrs)
+            c = http.client.HTTPSConnection(CODEX.host, timeout=600, context=ssl.create_default_context())
+            c.request("POST", CODEX.path, body=raw, headers=hdrs)
             r = c.getresponse()
             status = r.status
             if status == 401 and attempt == 0:
@@ -420,7 +454,7 @@ class Gateway(http.server.BaseHTTPRequestHandler):
             break
         if status == 401:
             r.read()
-            return self._block(conn, job["id"], tok["attempt_id"], "auth", "upstream rejected ChatGPT credential (401)")
+            return self._block(conn, job["id"], tok["attempt_id"], "auth", "upstream rejected OpenAI credential (401)")
         q = record_quota(conn, r.getheaders(), provider="openai-codex")
         self.send_response(status)
         for k, v in r.getheaders():
@@ -926,19 +960,22 @@ REVIEW_SEVERITIES = ("blocker", "major", "minor")
 
 
 def call_anthropic(model, system, user, max_tokens):
-    """One non-streaming Messages call on the Claude subscription (same credential path as the gateway)."""
-    body = json.dumps({"model": model, "max_tokens": max_tokens,
-                       "system": [{"type": "text", "text": CLAUDE_CODE_PREFIX}, {"type": "text", "text": system}],
+    """One non-streaming Messages call (same credential path as the gateway)."""
+    # The subscription only serves requests shaped like Claude Code's; an API key needs none of that.
+    sys_blocks = ([{"type": "text", "text": CLAUDE_CODE_PREFIX}] if UP.oauth else []) + [{"type": "text", "text": system}]
+    body = json.dumps({"model": model, "max_tokens": max_tokens, "system": sys_blocks,
                        "messages": [{"role": "user", "content": user}]}).encode()
     status, data, hdrs = None, b"", []
     for attempt in (0, 1):
         tokv = UP.token(force=attempt == 1)
         if not tokv:
-            raise RuntimeError("no Claude subscription credential available")
-        h = {"authorization": "Bearer " + tokv, "content-type": "application/json", "accept-encoding": "identity",
-             "anthropic-version": "2023-06-01", "anthropic-beta": "claude-code-20250219,oauth-2025-04-20",
-             "user-agent": "claude-code/2.1.285 (external, cli)", "x-app": "cli"}
-        c = http.client.HTTPSConnection("api.anthropic.com", timeout=600, context=ssl.create_default_context())
+            raise RuntimeError("no Anthropic credential available")
+        h = {**UP.auth_headers(tokv), "content-type": "application/json", "accept-encoding": "identity",
+             "anthropic-version": "2023-06-01"}
+        if UP.oauth:
+            h.update({"anthropic-beta": "claude-code-20250219,oauth-2025-04-20",
+                      "user-agent": "claude-code/2.1.285 (external, cli)", "x-app": "cli"})
+        c = http.client.HTTPSConnection(UP.host, timeout=600, context=ssl.create_default_context())
         try:
             c.request("POST", "/v1/messages", body=body, headers=h)
             r = c.getresponse()
@@ -958,7 +995,7 @@ def call_anthropic(model, system, user, max_tokens):
 
 
 def call_codex(model, system, user, max_tokens):
-    """One Responses call on the ChatGPT/Codex subscription (SSE collected into text)."""
+    """One streamed Responses call (same credential path as the gateway), SSE collected into text."""
     body = json.dumps({"model": model, "instructions": system, "stream": True, "store": False,
                        "max_output_tokens": max_tokens,
                        "input": [{"type": "message", "role": "user", "content": [{"type": "input_text", "text": user}]}]}).encode()
@@ -966,11 +1003,11 @@ def call_codex(model, system, user, max_tokens):
     for attempt in (0, 1):
         tokv = CODEX.token(force=attempt == 1)
         if not tokv:
-            raise RuntimeError("no ChatGPT subscription credential available")
+            raise RuntimeError("no OpenAI credential available")
         h = {**CODEX.headers(tokv), "content-type": "application/json", "accept": "text/event-stream", "accept-encoding": "identity"}
-        c = http.client.HTTPSConnection("chatgpt.com", timeout=600, context=ssl.create_default_context())
+        c = http.client.HTTPSConnection(CODEX.host, timeout=600, context=ssl.create_default_context())
         try:
-            c.request("POST", "/backend-api/codex/responses", body=body, headers=h)
+            c.request("POST", CODEX.path, body=body, headers=h)
             r = c.getresponse()
             status, raw, hdrs = r.status, r.read(), r.getheaders()
         finally:
@@ -1053,6 +1090,8 @@ def refresh_quota_if_stale(conn, provider, max_age=QUOTA_MAX_AGE) -> bool:
     try:
         handle_quota(conn, None, {"provider": provider})
         return True
+    except QuotaUnavailable:
+        return False
     except Exception as e:
         log.warning("quota refresh (%s) before reviewer choice failed: %s", provider, e)
         return False
@@ -1173,9 +1212,16 @@ def handle_review(conn, req, payload):
     return res
 
 
+class QuotaUnavailable(RuntimeError):
+    """No subscription quota to read: the provider uses an API key (billed usage, not a quota window)."""
+
+
 def handle_quota(conn, req, payload):
     provider = (payload or {}).get("provider", "anthropic")
-    r = subprocess.run(["/usr/local/bin/hermes", "usage", "--provider", provider, "--json"],
+    settings = load_settings()
+    if credential_source(settings, provider) != "hermes":
+        raise QuotaUnavailable(f"{provider} uses API-key credentials; quota readings need [credentials] = \"hermes\"")
+    r = subprocess.run([settings["hermes"]["bin"], "usage", "--provider", provider, "--json"],
                        capture_output=True, text=True, timeout=60, env=os.environ.copy())
     d = json.loads(r.stdout)
     w = {x.get("label", "").lower(): x.get("used_percent") for x in d.get("windows") or []}
@@ -1212,6 +1258,8 @@ def broker_loop(conn_factory):
                     if q is None or now() - q["ts"] > 600:
                         try:
                             handle_quota(conn, None, {"provider": prov})
+                        except QuotaUnavailable:
+                            pass
                         except Exception as e:
                             log.warning("quota refresh (%s) failed: %s", prov, e)
             for req in conn.execute("SELECT * FROM requests WHERE status='pending' ORDER BY id LIMIT 5").fetchall():
@@ -1240,22 +1288,37 @@ def broker_loop(conn_factory):
         time.sleep(1)
 
 
+def notify_send(n, body, hermes_bin):
+    """Deliver one notification; returns an error string or None."""
+    if n["method"] == "webhook":
+        # "text" suits Slack-style hooks, "content" Discord-style ones; extra keys are ignored by both.
+        data = json.dumps({"text": body, "content": body}).encode()
+        req = urllib.request.Request(n["url"], data=data, headers={"content-type": "application/json",
+                                                                    "user-agent": "proctor-notify"})
+        with urllib.request.urlopen(req, timeout=30) as r:
+            return None if 200 <= r.status < 300 else f"webhook HTTP {r.status}"
+    r = subprocess.run([hermes_bin, "send", "-q", "-t", n["target"], body],
+                       capture_output=True, text=True, timeout=60, env=os.environ.copy())
+    return None if r.returncode == 0 else (r.stderr or r.stdout)[-500:]
+
+
 def send_outbox(conn):
     settings = load_settings()
-    target = settings.get("notify", {}).get("target")
+    n = dict(settings.get("notify") or {})
+    n.setdefault("method", "hermes" if n.get("target") else "none")
+    hermes_bin = (settings.get("hermes") or {}).get("bin", "/usr/local/bin/hermes")
+    ready = (n["method"] == "webhook" and n.get("url")) or (n["method"] == "hermes" and n.get("target"))
     rows = conn.execute("SELECT * FROM outbox WHERE status='pending' AND attempts < 5 ORDER BY id LIMIT 3").fetchall()
     for row in rows:
-        if not target:
+        if not ready:
             conn.execute("UPDATE outbox SET status='skipped' WHERE id=?", (row["id"],))
             continue
         try:
-            r = subprocess.run(["/usr/local/bin/hermes", "send", "-q", "-t", target, row["body"]],
-                               capture_output=True, text=True, timeout=60, env=os.environ.copy())
-            if r.returncode == 0:
+            err = notify_send(n, row["body"], hermes_bin)
+            if err is None:
                 conn.execute("UPDATE outbox SET status='sent', sent_at=? WHERE id=?", (now(), row["id"]))
             else:
-                conn.execute("UPDATE outbox SET attempts=attempts+1, error=? WHERE id=?",
-                             ((r.stderr or r.stdout)[-500:], row["id"]))
+                conn.execute("UPDATE outbox SET attempts=attempts+1, error=? WHERE id=?", (err, row["id"]))
         except Exception as e:
             conn.execute("UPDATE outbox SET attempts=attempts+1, error=? WHERE id=?", (str(e)[:500], row["id"]))
 
@@ -1271,12 +1334,12 @@ def main():
     os.umask(0o007)
     settings = load_settings()
     gw = settings["gateway"]
-    UP = Upstream()
+    UP = Upstream(settings)
     if not UP.token():
-        log.warning("no Anthropic subscription credential resolved; Claude requests will be refused")
-    CODEX = CodexUpstream()
+        log.warning("no Anthropic credential (%s) resolved; Claude requests will be refused", UP.source)
+    CODEX = CodexUpstream(settings)
     if not CODEX.token():
-        log.warning("no ChatGPT/Codex subscription credential resolved; GPT requests will be refused")
+        log.warning("no OpenAI credential (%s) resolved; GPT requests will be refused", CODEX.source)
     Path("/run/proctor-xfer").mkdir(exist_ok=True)
     os.chmod("/run/proctor-xfer", 0o711)
 

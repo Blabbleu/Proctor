@@ -9,6 +9,9 @@ description = "Offline-testable coding task control plane"
 requires-python = ">=3.11"
 dependencies = []
 
+[project.scripts]
+proctor = "proctor.cli:main"
+
 [tool.setuptools.packages.find]
 include = ["proctor*"]
 namespaces = true

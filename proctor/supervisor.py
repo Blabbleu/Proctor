@@ -278,7 +278,8 @@ class Supervisor:
             if f.is_file():
                 h.update(f.name.encode())
                 h.update(f.read_bytes())
-        h.update(Path(self.settings["harness"]["claude_binary"]).name.encode())
+        if self.settings["harness"]["claude_binary"]:
+            h.update(Path(self.settings["harness"]["claude_binary"]).name.encode())
         if self.settings["harness"].get("codex_binary"):
             h.update(Path(self.settings["harness"]["codex_binary"]).name.encode())
             h.update(b"code-mode-host")
@@ -293,7 +294,12 @@ class Supervisor:
             shutil.rmtree(ctx)
         shutil.copytree(APP.parent / "images" / "base", ctx)
         shutil.copytree(RUNNER, ctx / "runner")
-        shutil.copy2(self.settings["harness"]["claude_binary"], ctx / "claude")
+        # Harness binaries are optional: the scripted mock needs neither, and a job that selects a
+        # missing one is refused at `proctor submit`.
+        if self.settings["harness"]["claude_binary"]:
+            shutil.copy2(self.settings["harness"]["claude_binary"], ctx / "claude")
+        else:
+            (ctx / "claude").write_text("#!/bin/sh\necho 'claude harness not installed' >&2; exit 127\n")
         cx = self.settings["harness"].get("codex_binary")
         if cx:
             shutil.copy2(cx, ctx / "codex")

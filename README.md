@@ -33,6 +33,22 @@ The demo exercises real task-intake and policy code against temporary local stat
 
 The GitHub Actions workflow defines the offline checks for Python 3.11–3.13. A workflow file is not a claim that hosted CI has already run.
 
+## Install on a host
+
+On a dedicated Linux host with Docker, systemd and Python 3.11+:
+
+```bash
+git clone https://github.com/Blabbleu/Proctor.git && cd Proctor
+sudo ./install.sh --dry-run        # see every change first
+sudo ./install.sh                  # install, start the services, run `proctor doctor`
+
+sudo proctor project add myproj --path /srv/myproj --check 'test=make test'
+sudo proctor submit myproj 'Describe a small change' -a 'what done looks like' --harness mock
+sudo proctor list
+```
+
+A fresh install runs the scripted mock harness with no credentials, picks a free gateway subnet, and stages an installed Claude Code binary if one is on `PATH`. For real models, add API keys to `/etc/proctor/credentials.env`, then set prices and spending ceilings in `/etc/proctor/settings.toml`. To use Claude/ChatGPT subscriptions through Hermes Agent instead of API keys, install with `--hermes`. `sudo ./install.sh --uninstall` removes everything except configuration and job history (`--purge` removes those too). See the [operator guide](docs/deployment.md).
+
 ## Architecture
 
 ```mermaid
@@ -84,12 +100,12 @@ Publication and merge are different operations. The public example defaults to *
 ## Scope and limitations
 
 - Live execution targets a dedicated Linux host with Docker, systemd, and iptables compatibility. macOS/Windows live deployment is not supported by these service templates.
-- The live credential resolver and notification/quota adapters currently integrate with [Hermes Agent](https://github.com/NousResearch/hermes-agent). The core control plane and offline demo do not require Hermes. This is not a general-purpose provider SDK.
+- Model credentials come from Anthropic/OpenAI API keys by default. Subscription credentials, subscription-quota readings and Hermes notifications need [Hermes Agent](https://github.com/NousResearch/hermes-agent) (`install.sh --hermes`). Only the Anthropic Messages and OpenAI Responses APIs are routed; this is not a general-purpose provider SDK.
 - Model names, CLI versions, endpoint behavior, provider terms, and prices must be checked by the operator. No proprietary CLI binaries or provider credentials are redistributed.
 - Budget figures are estimated list-price usage equivalents, not hard billing limits. In-flight requests and estimation error can overshoot; disable provider-side extra usage separately.
 - Missing quota readings can permit calls unless `require_fresh` is enabled; a present reading is not continuously fresh on every path.
 - Policy checks assume trusted control-plane callers and files. An approval string in a writable decision file is not cryptographic owner authentication.
-- Tests in this edition cover offline behavior. Live gateway, container recovery, and network isolation still need a dedicated integration test environment.
+- Tests in this edition cover offline behavior. The installer, live gateway, container recovery, and network isolation still need a dedicated integration test environment.
 
 ## Project status
 

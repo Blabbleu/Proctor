@@ -29,7 +29,9 @@ A local candidate is not a published release. Keep these gates explicit.
 
 - [ ] Provision a disposable dedicated Linux host with no production projects.
 - [ ] Install supported harnesses through their official distribution, respecting licenses and provider terms.
-- [ ] Configure and test Hermes credential/quota adapters without exposing tokens.
+- [ ] Run `install.sh` on a fresh host: install, re-run as upgrade, `--uninstall`, then `--uninstall --purge`.
+- [ ] Test API-key credentials (`[credentials] = "env"`) against both providers, and a webhook notification.
+- [ ] Configure and test Hermes credential/quota adapters (`install.sh --hermes`) without exposing tokens.
 - [ ] Validate internal-network, host-access, IPv4 and IPv6 firewall behavior.
 - [ ] Run complete mock-harness jobs through preparation, worker, export, checks, and branch publication.
 - [ ] Exercise validation failure, bounded repair, role violation, cancellation, restart/reattachment, lost container, and stale-attempt refusal.

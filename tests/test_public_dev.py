@@ -75,6 +75,7 @@ class OfflineBehaviorTests(unittest.TestCase):
         self.assertIn('jobs', {r[0] for r in self.conn.execute("SELECT name FROM sqlite_master WHERE type='table'")})
 
     def test_quota_subprocess_uses_configured_home(self):
+        (self.etc / 'settings.toml').write_text('[prices]\n[credentials]\nanthropic = "hermes"\n')
         reply = mock.Mock(stdout='{"windows": [{"label": "session", "used_percent": 1}]}')
         with mock.patch.dict(os.environ, {'HOME': '/srv/example-home'}), mock.patch.object(broker.subprocess, 'run', return_value=reply) as run:
             broker.handle_quota(self.conn, None, {'provider': 'anthropic'})
