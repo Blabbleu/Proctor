@@ -26,7 +26,11 @@ def main():
         os.environ['PROCTOR_ETC'] = str(etc)
         os.environ['PROCTOR_STATE'] = str(state)
         # Root cannot be a project owner. No repository operations are performed.
-        owner = pwd.getpwuid(os.geteuid()).pw_name if os.geteuid() else 'developer'
+        # Container/CI UIDs may have no passwd entry; the name is only a label here.
+        try:
+            owner = pwd.getpwuid(os.geteuid()).pw_name if os.geteuid() else 'developer'
+        except KeyError:
+            owner = 'developer'
         project_file = etc / 'projects/example/project.toml'
         project_file.write_text(project_file.read_text().replace('owner = "developer"', 'owner = ' + json.dumps(owner)))
         from proctor import cli, common, db, orch
