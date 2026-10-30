@@ -201,7 +201,7 @@ say "proctor doctor"
 cat <<EOF
 
 Next steps
-  1. Register a repository:   sudo proctor project add myproj --path /path/to/repo --check 'test=make test'
+  1. Register a repository:   sudo proctor project add myproj --path /path/to/repo --check 'test=python3 -m unittest -q'
   2. Try the mock harness:    sudo proctor submit myproj 'Describe a small change' -a 'what done looks like' --harness mock
                               sudo proctor list; sudo proctor status <job-id>
   3. Real models: put API keys in $ETC/credentials.env, then in $ETC/settings.toml set [prices] and

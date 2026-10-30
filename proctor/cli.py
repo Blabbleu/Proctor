@@ -137,7 +137,7 @@ def cmd_status(a, conn):
              f"created:   {iso(j['created_at'])}   started {iso(j['started_at'])}   finished {iso(j['finished_at'])}   deadline {iso(j['deadline'])}",
              f"base:      {j['base_branch']} @ {j['base_commit'] or '-'}",
              f"candidate: {j['candidate_commit'] or '-'}",
-             f"usage:     {n} model calls, ≈ ${c:.3f} at list price (subscription-billed; gateway-metered)"]
+             f"usage:     {n} model calls, ≈ ${c:.3f} at list price (gateway-metered estimate)"]
     if j["reason"]:
         lines.append(f"reason:    {j['reason']}")
     if j["publication"]:
@@ -230,7 +230,10 @@ def cmd_usage(a, conn):
     print(f"Gateway-metered usage at list price (enforced caps: task ${b['per_task_usd']}, day ${b['per_day_usd']}, month ${b['per_month_usd']})")
     print(f"  today: {d[0]} calls, ${d[1]:.3f}    month: {mo[0]} calls, ${mo[1]:.3f}")
     g = s.get("quota", {})
-    print(f"  quota guard (monitored threshold): pause model calls at 5h ≥ {g.get('max_5h'):.0%} or 7d ≥ {g.get('max_7d'):.0%}")
+    if not g.get("enabled", True):
+        print("  quota guard: off ([quota].enabled = false)")
+    else:   # same defaults as broker.quota_block_reason
+        print(f"  quota guard (monitored threshold): pause model calls at 5h ≥ {g.get('max_5h', 0.85):.0%} or 7d ≥ {g.get('max_7d', 0.90):.0%}")
     for prov, v in quotas.items():
         q = v["reading"]
         seen = f"5h {pct(q['util_5h'])}, 7d {pct(q['util_7d'])} (seen {iso(q['ts'])} via {q['source']})" if q else "no reading yet"

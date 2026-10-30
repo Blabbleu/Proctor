@@ -149,6 +149,14 @@ class NotifyTests(SandboxCase):
         self.assertEqual(tuple(self.status()), ('pending', 1))
 
 
+class CliDefaultsTests(SandboxCase):
+    def test_usage_runs_on_shipped_settings(self):
+        self.write_settings((ROOT / 'config/settings.toml').read_text())
+        with mock.patch('builtins.print') as p:
+            cli.cmd_usage(argparse.Namespace(json=False), self.conn)
+        self.assertIn('quota guard: off', ' '.join(str(c.args[0]) for c in p.call_args_list))
+
+
 class OnboardingTests(SandboxCase):
     def add(self, **kw):
         args = dict(id='demo', path=str(self.repo), owner='developer', branch=None, name=None, check=None,

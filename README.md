@@ -19,9 +19,9 @@ The interesting work is in the control plane:
 - **Explicit autonomy:** project-scoped task caps, review capacity, role path restrictions, merge policies, and owner approvals.
 - **Recoverability:** container reattachment, stale-attempt rejection, infrastructure retry limits, and best-effort preservation of partial patches.
 
-## Try it without credentials
+## Run the offline checks
 
-Linux, Python 3.11+, and Git are sufficient for the offline development path. No third-party Python runtime dependencies are required.
+No host setup or credentials needed: Linux, Python 3.11+, and Git are sufficient for the offline development path. No third-party Python runtime dependencies are required.
 
 ```bash
 python3 -m unittest discover -s tests -v
@@ -31,7 +31,7 @@ python3 scripts/check_public_release.py
 
 The demo exercises real task-intake and policy code against temporary local state. It **does not** run a coding model, start the Docker supervisor, prove firewall isolation, or demonstrate a successful end-to-end worker job. Its output is produced by execution rather than a canned transcript.
 
-The GitHub Actions workflow defines the offline checks for Python 3.11–3.13. A workflow file is not a claim that hosted CI has already run.
+GitHub Actions runs the same offline checks on Python 3.11–3.13 for every push and pull request.
 
 ## Install on a host
 
@@ -42,12 +42,87 @@ git clone https://github.com/Blabbleu/Proctor.git && cd Proctor
 sudo ./install.sh --dry-run        # see every change first
 sudo ./install.sh                  # install, start the services, run `proctor doctor`
 
-sudo proctor project add myproj --path /srv/myproj --check 'test=make test'
+sudo proctor project add myproj --path /srv/myproj --check 'test=python3 -m unittest -q'
 sudo proctor submit myproj 'Describe a small change' -a 'what done looks like' --harness mock
 sudo proctor list
 ```
 
-A fresh install runs the scripted mock harness with no credentials, picks a free gateway subnet, and stages an installed Claude Code binary if one is on `PATH`. For real models, add API keys to `/etc/proctor/credentials.env`, then set prices and spending ceilings in `/etc/proctor/settings.toml`. To use Claude/ChatGPT subscriptions through Hermes Agent instead of API keys, install with `--hermes`. `sudo ./install.sh --uninstall` removes everything except configuration and job history (`--purge` removes those too). See the [operator guide](docs/deployment.md).
+A fresh install runs the scripted mock harness with no credentials, picks a free gateway subnet, and stages an installed Claude Code binary if one is on `PATH`. For real models, add API keys to `/etc/proctor/credentials.env`, then set prices and spending ceilings in `/etc/proctor/settings.toml`. To use Claude/ChatGPT subscriptions through Hermes Agent instead of API keys, install with `--hermes`. Re-running `sudo ./install.sh` upgrades in place and keeps your configuration. `sudo ./install.sh --uninstall` removes everything except configuration and job history (`--purge` removes those too). See the [operator guide](docs/deployment.md).
+
+## Using Proctor
+
+**1. Register a project.** Proctor works on a local Git repository owned by a non-root user:
+
+```bash
+sudo proctor project add myproj --path /srv/myproj --check 'test=python3 -m pytest -q' --check 'lint=ruff check .'
+```
+
+Checks and workers run in containers **with no network access**, so the project's test dependencies must be installed at image build time. Add them to `/etc/proctor/projects/myproj/Dockerfile`, for example `RUN pip install --break-system-packages pytest ruff`. Proctor runs every check on the untouched base commit first. A command that is not found stops the job as `blocked_environment` before any agent runs. Any other baseline failure, including `python3 -m pytest` without pytest installed, is recorded as pre-existing and the job continues, so look at the baseline results in `proctor status` on your first job.
+
+**2. Submit a task.** A task is a goal plus at least one acceptance criterion. A goal shorter than 15 characters, or a task with no `-a`, is parked as `needs_input` instead of run.
+
+```bash
+sudo proctor submit myproj 'Return 404 instead of 500 when a user id does not exist' \
+    -a 'GET /users/<missing id> returns 404' -a 'existing tests still pass' --harness mock
+```
+
+`--harness mock` runs a scripted worker with no model calls. Pick a scenario with `--mock` to exercise each path: `good` (passes), `fixable` (fails once, then repairs), `bad` (exhausts repair rounds), `noop` (no change), `ask` (needs input), `slow` (for trying `cancel`).
+
+**3. Follow it.**
+
+| Command | Shows |
+|---|---|
+| `proctor list` | recent jobs, state, cost |
+| `proctor status <job>` | state, base and candidate commits, supervisor-run check results, published branch |
+| `proctor logs <job>` | event timeline (`--worker` for the agent transcript, `--check <name>` for a check log) |
+| `proctor cancel <job>` | stop a running job; its partial patch is preserved when possible |
+| `proctor retry <job>` | resubmit a failed, blocked or cancelled job on a fresh base |
+| `proctor usage` | metered spend against the budget ceilings |
+| `proctor doctor` | service, network, firewall, credential and project health |
+
+**4. Review and merge.** A job that passes its checks ends in `ready_for_review`. The candidate is published as branch `proctor/<job-id>` in the project's repository, and the patch sits under the job's artifacts directory (see `proctor status`). Proctor does not merge or push by default. Review the branch and merge it yourself, as the repository owner:
+
+```bash
+git -C /srv/myproj diff main...proctor/<job-id>
+git -C /srv/myproj merge --ff-only proctor/<job-id>
+```
+
+Automatic planning and audited fast-forward merges are opt-in per project. See [planner integration](docs/planner-integration.md).
+
+## Using a real model
+
+1. Add an API key to `/etc/proctor/credentials.env` (`ANTHROPIC_API_KEY=` or `OPENAI_API_KEY=`), then run `sudo systemctl restart proctor-broker`. Workers never see this key; they get a per-attempt gateway token.
+2. In `/etc/proctor/settings.toml`, point `[harness]` at the harness binary, price the model, and set spending ceilings. The gateway refuses every model call while a ceiling is `0`, and it only allows priced models.
+
+   ```toml
+   [budget]
+   per_task_usd = 2
+   per_day_usd = 10
+   per_month_usd = 100
+
+   [prices]
+   # USD per million tokens. Use the provider's current list prices.
+   "claude-sonnet-5-5" = { input = <in>, output = <out>, cache_read = <read>, cache_write = <write> }
+
+   [harness]
+   claude_binary = "/opt/proctor/harness/claude-<version>"   # filled in by install.sh if claude was on PATH
+   ```
+
+3. Allow the model for the project, then submit without `--harness mock`. `--force` rewrites `project.toml`, so redo any hand edits:
+
+   ```bash
+   sudo proctor project add myproj --path /srv/myproj --check 'test=python3 -m pytest -q' \
+       --harness claude-code --model claude-sonnet-5-5 --force
+   sudo proctor doctor
+   ```
+
+Budget figures are gateway estimates at list price, not billing limits. Keep a spending limit with the provider as well.
+
+## Troubleshooting
+
+- Run `sudo proctor doctor` first: `BAD` lines are broken, `WARN` lines only matter for real models.
+- Service logs: `journalctl -u proctor-broker -u proctor-supervisor -u proctor-firewall -e`.
+- A job's `reason` field (`proctor status <job>`) explains `blocked_environment`, `blocked_budget` and `needs_input` outcomes, for example an image build failure or an exhausted ceiling.
 
 ## Architecture
 
