@@ -21,7 +21,7 @@ A `ready_for_review` result is not a merge authorization. Baseline failures may 
 
 ## Persistence and recovery
 
-[`db.py`](../swe_pilot/db.py) stores job and attempt identities separately. Container labels and gateway credentials bind work to the current attempt. [`supervisor.py`](../swe_pilot/supervisor.py) reattaches to surviving containers and refuses stale attempt results. A lost container can trigger an infrastructure retry within configured limits.
+[`db.py`](../proctor/db.py) stores job and attempt identities separately. Container labels and gateway credentials bind work to the current attempt. [`supervisor.py`](../proctor/supervisor.py) reattaches to surviving containers and refuses stale attempt results. A lost container can trigger an infrastructure retry within configured limits.
 
 The orchestrator keeps project-local Markdown backlog, decisions, pending approvals, and journal alongside locked JSON state. This is easy for an operator to inspect, but it is not a multi-tenant authorization database.
 
@@ -29,13 +29,13 @@ A failed or cancelled run tries to export partial work. Preservation can fail; t
 
 ## Gateway and budget accounting
 
-[`broker.py`](../swe_pilot/broker.py) authenticates an attempt token, checks job/model compatibility, reserves estimated usage before forwarding, and records provider usage. A process-local lock protects reservations within the single broker process. This is not a distributed reservation protocol and should not be deployed as multiple independent broker replicas.
+[`broker.py`](../proctor/broker.py) authenticates an attempt token, checks job/model compatibility, reserves estimated usage before forwarding, and records provider usage. A process-local lock protects reservations within the single broker process. This is not a distributed reservation protocol and should not be deployed as multiple independent broker replicas.
 
 Usage-equivalent limits depend on configured prices and an input-token estimate. Subscription guards depend on provider response headers and periodic observations. Neither mechanism is a provider billing guarantee. Reviewer calls and planner calls have their own paths; a worker gateway does not automatically meter every external agent invocation.
 
 ## Autonomy and approval
 
-[`orch.py`](../swe_pilot/orch.py) adds task/day limits, review capacity, time-window spacing, title deduplication, role-specific research capacity, and review/approval policy. The planner can choose a task, but deterministic code controls whether it may submit or request a merge.
+[`orch.py`](../proctor/orch.py) adds task/day limits, review capacity, time-window spacing, title deduplication, role-specific research capacity, and review/approval policy. The planner can choose a task, but deterministic code controls whether it may submit or request a merge.
 
 Review verdicts are associated with candidate SHAs. A verdict for an earlier candidate must not authorize a changed one. An explicit owner approval can override the model-review gate in the orchestration CLI; it is not permission to ignore required checks. Review models are chosen from configured lists, so “independent review” does not necessarily mean a different provider or model family.
 

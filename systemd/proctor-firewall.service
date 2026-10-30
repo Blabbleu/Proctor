@@ -1,0 +1,13 @@
+[Unit]
+Description=proctor runner network isolation (docker network proctor-gw + INPUT filter)
+After=docker.service network-online.target
+Requires=docker.service
+Before=proctor-broker.service proctor-supervisor.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/opt/proctor/bin/proctor-firewall
+
+[Install]
+WantedBy=multi-user.target

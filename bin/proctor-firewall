@@ -1,0 +1,25 @@
+#!/bin/bash
+# proctor network isolation for runners (idempotent). Runs as root before the broker.
+#  * docker network proctor-gw: --internal (no route off the bridge), bridge iface proctor-gw0
+#  * INPUT filter: from proctor-gw0 only the gateway port on the bridge IP is reachable;
+#    every other host service (dashboard, web UI, ssh, ...) is dropped.
+set -euo pipefail
+NET=proctor-gw; IF=proctor-gw0; SUBNET=172.31.250.0/24; GW=172.31.250.1; PORT=18780
+if ! docker network inspect "$NET" >/dev/null 2>&1; then
+  docker network create --internal --driver bridge --subnet "$SUBNET" --gateway "$GW" \
+    -o com.docker.network.bridge.name="$IF" -o com.docker.network.bridge.enable_icc=false \
+    --label proctor=1 "$NET" >/dev/null
+fi
+ip link show "$IF" >/dev/null 2>&1 || { echo "bridge $IF missing" >&2; exit 1; }
+for T in iptables ip6tables; do
+  $T -N PROCTOR-GW-IN 2>/dev/null || true
+  $T -F PROCTOR-GW-IN
+  $T -C INPUT -i "$IF" -j PROCTOR-GW-IN 2>/dev/null || $T -I INPUT 1 -i "$IF" -j PROCTOR-GW-IN
+done
+iptables -A PROCTOR-GW-IN -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
+iptables -A PROCTOR-GW-IN -p tcp -d "$GW" --dport "$PORT" -j ACCEPT
+iptables -A PROCTOR-GW-IN -j DROP
+ip6tables -A PROCTOR-GW-IN -j DROP
+# Belt and braces: nothing from the runner bridge is forwarded anywhere.
+iptables -C DOCKER-USER -i "$IF" -j DROP 2>/dev/null || iptables -I DOCKER-USER 1 -i "$IF" -j DROP
+echo "proctor-firewall: $NET/$IF ready; only $GW:$PORT reachable from runners"

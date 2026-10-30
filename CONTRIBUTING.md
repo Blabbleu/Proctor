@@ -6,7 +6,7 @@ Start with the offline path; it must not require credentials, root, Docker, a li
 python3 -m unittest discover -s tests -v
 python3 examples/control_plane_demo.py
 python3 scripts/check_public_release.py
-python3 -m compileall -q swe_pilot examples scripts tests
+python3 -m compileall -q proctor examples scripts tests
 ```
 
 Use Python 3.11+ on Linux. Keep core runtime dependencies in the standard library unless a dependency has a clear operational benefit. Do not make import-time network calls or open deployment paths in tests.

@@ -1,6 +1,6 @@
-# swe-pilot
+# Proctor
 
-**A supervised execution layer for AI coding agents.**
+**A supervised execution layer for AI coding agents — they don't grade their own work.**
 
 Turn a scoped task into an isolated worker run, validate the exact resulting commit independently, and retain an auditable review artifact before a human or policy-controlled merge.
 
@@ -8,7 +8,7 @@ Built from a self-hosted deployment; extracted into a public development edition
 
 ## Why it exists
 
-A coding agent saying “tests passed” is not deployment evidence. swe-pilot separates planning, implementation, validation, and repository publication so that a worker's report cannot substitute for supervisor-run checks.
+A coding agent saying “tests passed” is not deployment evidence. Proctor separates planning, implementation, validation, and repository publication so that a worker's report cannot substitute for supervisor-run checks.
 
 The interesting work is in the control plane:
 
@@ -37,7 +37,7 @@ The GitHub Actions workflow defines the offline checks for Python 3.11–3.13. A
 
 ```mermaid
 flowchart TD
-    Owner[Owner / CLI / planner] --> CLI[swe CLI + orchestrator policies]
+    Owner[Owner / CLI / planner] --> CLI[proctor CLI + orchestrator policies]
     CLI --> DB[(SQLite state and audit events)]
     DB <--> Supervisor[Trusted deterministic supervisor]
     Supervisor --> Worker[Non-root Docker coding worker]
@@ -73,13 +73,13 @@ Publication and merge are different operations. The public example defaults to *
 
 | Area | Entry point | Engineering concern |
 |---|---|---|
-| Job engine | [`supervisor.py`](swe_pilot/supervisor.py) | state transitions, containers, frozen candidates, repair, recovery |
-| Model/repo broker | [`broker.py`](swe_pilot/broker.py) | credentials, reservations, quotas, publication, owner-run Git |
-| Policy layer | [`orch.py`](swe_pilot/orch.py) | capacity, review, approvals, merge controls |
-| Harness adapters | [`harness.py`](swe_pilot/harness.py) | Claude Code / Codex / scripted mock normalization |
-| Registry | [`common.py`](swe_pilot/common.py) | TOML validation, roles, paths, model approval |
-| Persistence | [`db.py`](swe_pilot/db.py) | schema, events, attempts, requests |
-| CLI | [`cli.py`](swe_pilot/cli.py) | intake, idempotency, status, cancellation |
+| Job engine | [`supervisor.py`](proctor/supervisor.py) | state transitions, containers, frozen candidates, repair, recovery |
+| Model/repo broker | [`broker.py`](proctor/broker.py) | credentials, reservations, quotas, publication, owner-run Git |
+| Policy layer | [`orch.py`](proctor/orch.py) | capacity, review, approvals, merge controls |
+| Harness adapters | [`harness.py`](proctor/harness.py) | Claude Code / Codex / scripted mock normalization |
+| Registry | [`common.py`](proctor/common.py) | TOML validation, roles, paths, model approval |
+| Persistence | [`db.py`](proctor/db.py) | schema, events, attempts, requests |
+| CLI | [`cli.py`](proctor/cli.py) | intake, idempotency, status, cancellation |
 
 ## Scope and limitations
 

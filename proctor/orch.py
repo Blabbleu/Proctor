@@ -1,4 +1,4 @@
-"""swe-pilot orchestrator tools: `swe orch ...` (see docs/orchestrator-spec.md, Part B).
+"""proctor orchestrator tools: `proctor orch ...` (see docs/orchestrator-spec.md, Part B).
 
 Deterministic helpers for the Hermes cron agent that plans/reviews work per project. Nothing here
 calls a model. Hard limits (daily cap, open reviews, spacing, quota, merge policy, approval paths)
@@ -27,10 +27,10 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
-from swe_pilot import common, db
-from swe_pilot.common import (ACTIVE, JOB_ID_RE, PROVIDER_LABEL, QUOTA_ROW, TERMINAL, ProjectError, list_projects,
+from proctor import common, db
+from proctor.common import (ACTIVE, JOB_ID_RE, PROVIDER_LABEL, QUOTA_ROW, TERMINAL, ProjectError, list_projects,
                               load_project, load_settings, path_protected, provider_for, read_small, review_enabled)
-from swe_pilot.broker import quota_block_reason, remaining_allowance
+from proctor.broker import quota_block_reason, remaining_allowance
 
 ACTIVE_STATES = tuple(ACTIVE) + ("queued", "waiting_quota")
 DEDUPE_DAYS = 14
@@ -92,16 +92,16 @@ def next_midnight(t: float, settings=None) -> float:
 
 
 # --------------------------------------------------------------------------- per-project state files
-def _swe_ids():
+def _proctor_ids():
     try:
-        return pwd.getpwnam("swe").pw_uid, grp.getgrnam("swe").gr_gid
+        return pwd.getpwnam("proctor").pw_uid, grp.getgrnam("proctor").gr_gid
     except KeyError:
         return None
 
 
 def _own(path: Path, mode: int):
     os.chmod(path, mode)
-    ids = _swe_ids()
+    ids = _proctor_ids()
     if os.geteuid() == 0 and ids:
         os.chown(path, *ids)
 
@@ -214,7 +214,7 @@ def owner_git(p: dict, *args, timeout=20):
 
 
 class BranchView:
-    """Lazy snapshot of the base tip and the swe/* branches of one project's source repo."""
+    """Lazy snapshot of the base tip and the proctor/* branches of one project's source repo."""
 
     def __init__(self, p: dict):
         self.p = p
@@ -228,7 +228,7 @@ class BranchView:
             return self
         self._loaded = True
         base = self.p["base_branch"]
-        r = owner_git(self.p, "for-each-ref", "--format=%(refname) %(objectname)", "refs/heads/swe/", f"refs/heads/{base}")
+        r = owner_git(self.p, "for-each-ref", "--format=%(refname) %(objectname)", "refs/heads/proctor/", f"refs/heads/{base}")
         if r is None or r.returncode != 0:
             self.error = ((r.stderr.strip()[-200:] if r else "") or "cannot run git as the repo owner")
             return self
@@ -236,7 +236,7 @@ class BranchView:
             ref, _, sha = line.partition(" ")
             if ref == f"refs/heads/{base}":
                 self.base_tip = sha
-            elif ref.startswith("refs/heads/swe/"):
+            elif ref.startswith("refs/heads/proctor/"):
                 self.branches[ref[len("refs/heads/"):]] = sha
         self.ok = self.base_tip is not None
         if not self.ok:
@@ -259,7 +259,7 @@ class BranchView:
 
     def _job_branch(self, j) -> dict:
         self.load()
-        name = f"swe/{j['id']}"
+        name = f"proctor/{j['id']}"
         pub = json.loads(j["publication"] or "{}")
         if not self.ok:
             return {"branch": name, "known": False, "exists": bool(pub.get("branch")), "error": self.error}
@@ -605,7 +605,7 @@ def broker_request(conn, kind, job_id, payload, wait, cancel_on_timeout=False):
         if r["status"] in ("done", "error"):
             res = json.loads(r["result"] or "{}")
             if r["status"] == "error" and re.fullmatch(r"'?%s'?" % kind, str(res.get("error", ""))):
-                res["error"] = f"the broker has no handler for {kind!r} (is swe-broker running the new code?)"
+                res["error"] = f"the broker has no handler for {kind!r} (is proctor-broker running the new code?)"
             return r["status"], res, rid
         if time.time() >= deadline:
             if cancel_on_timeout:
@@ -619,11 +619,11 @@ def broker_request(conn, kind, job_id, payload, wait, cancel_on_timeout=False):
 
 # --------------------------------------------------------------------------- submit path (reuses cli)
 def _cli():
-    for name in ("swe_pilot.cli", "__main__"):
+    for name in ("proctor.cli", "__main__"):
         m = sys.modules.get(name)
         if m is not None and hasattr(m, "cmd_submit"):
             return m
-    from swe_pilot import cli
+    from proctor import cli
     return cli
 
 
@@ -707,7 +707,7 @@ def review_lines(j, p, settings) -> list[str]:
         return ["(cross-model review is disabled for this project)"]
     rv = stored_review(j)
     if not rv:
-        return [f"not run yet: `swe orch qa {j['id']}`"]
+        return [f"not run yet: `proctor orch qa {j['id']}`"]
     L = [f"verdict: {rv['verdict'].upper()}  (reviewer {rv['model']}, ${rv.get('cost', 0):.4f}, tests_adequate={rv.get('tests_adequate')})",
          f"summary: {rv.get('summary', '')}"]
     for it in rv.get("issues") or []:
@@ -741,7 +741,7 @@ def review_block(conn, settings, an, j) -> list[str]:
         L.append(f"APPROVAL-CHECK not passing (merge needs an owner approval): {', '.join(ach)}")
     if d["protected_hits"]:
         L.append(f"protected-path hits: {', '.join(d['protected_hits'])}")
-    cmds = [f"swe orch review {j['id']}"]
+    cmds = [f"proctor orch review {j['id']}"]
     if db.meta(j).get("role"):
         L.append(f"role: {db.meta(j)['role']}")
     if j["state"] == "ready_for_review" and review_enabled(p, settings):
@@ -749,17 +749,17 @@ def review_block(conn, settings, an, j) -> list[str]:
         L.append("cross-model review: " + (f"{rv['verdict'].upper()} by {rv['model']} — {rv.get('summary', '')[:200]}" if rv
                                            else "NOT RUN (merge needs it)"))
         if not rv or rv["verdict"] != "approve":
-            cmds.append(f"swe orch qa {j['id']}" if not rv else f"swe orch retry {j['id']} --note \"...\" (review: {rv['verdict']})")
+            cmds.append(f"proctor orch qa {j['id']}" if not rv else f"proctor orch retry {j['id']} --note \"...\" (review: {rv['verdict']})")
     if j["state"] == "ready_for_review":
         b = view.job_branch(j)
         L.append(f"branch: {b['branch']} " + ("(repo unreadable: " + b["error"] + ")" if not b["known"] else
                  f"exists={b['exists']} merged_into_base={b.get('merged')} ff_mergeable={b.get('ff_mergeable')}"))
         if p["orchestrator"]["merge"] == "audit":
             ap = " --approved A<n>" if d["approval_hits"] else ""
-            cmds.append(f"swe orch merge {j['id']}{ap}")
-        cmds += [f"swe orch keep {j['id']} --note \"...\"", f"swe orch reject {j['id']} --reason \"...\""]
+            cmds.append(f"proctor orch merge {j['id']}{ap}")
+        cmds += [f"proctor orch keep {j['id']} --note \"...\"", f"proctor orch reject {j['id']} --reason \"...\""]
     else:
-        cmds += [f"swe orch retry {j['id']} --note \"...\"", f"swe orch handled {j['id']} --outcome noted --note \"...\""]
+        cmds += [f"proctor orch retry {j['id']} --note \"...\"", f"proctor orch handled {j['id']} --outcome noted --note \"...\""]
     L.append("next: " + "  |  ".join(cmds))
     return L
 
@@ -767,7 +767,7 @@ def review_block(conn, settings, an, j) -> list[str]:
 def build_context(conn, settings, an, header: list[str] | None = None) -> str:
     pid, p, st, cap, store = an["pid"], an["p"], an["st"], an["cap"], an["store"]
     o = p["orchestrator"]
-    L = [f"# swe orch context: {pid} ({p.get('name', pid)})"] + (header or [])
+    L = [f"# proctor orch context: {pid} ({p.get('name', pid)})"] + (header or [])
     if not o["enabled"]:
         L.append("NOTE: [orchestrator].enabled = false for this project; the gate will not wake the agent for it.")
     L += ["", f"needs now: {', '.join(an['needs']) or 'nothing'}", ""]
@@ -786,10 +786,10 @@ def build_context(conn, settings, an, header: list[str] | None = None) -> str:
           f"night={o['night']}, day_gap_hours={o['day_gap_hours']}, task_model={o['task_model'] or '(project default)'}",
           f"- merge policy: {o['merge']}" + (" (push after merge)" if o["push"] else ""),
           f"- approval_paths: {o['approval_paths'] or '-'}", f"- protected_paths: {p['protected_paths'] or '-'}",
-          "- cross-model review before merge: " + ("ON (`swe orch qa <job>`; merge needs APPROVE or --approved A<n>)"
+          "- cross-model review before merge: " + ("ON (`proctor orch qa <job>`; merge needs APPROVE or --approved A<n>)"
                                                     if review_enabled(p, settings) else "off")]
     if p.get("roles"):
-        L += ["", "## Worker roles (`swe orch submit ... --role <name>`; changes outside the role's paths are rejected)"]
+        L += ["", "## Worker roles (`proctor orch submit ... --role <name>`; changes outside the role's paths are rejected)"]
         for rn, r in sorted(p["roles"].items()):
             L.append(f"- {rn}: paths {', '.join(r['paths'])}" + (f"; model {r['model']}" if r.get("model") else "")
                      + (f"; extra required checks {', '.join(r['checks'])}" if r.get("checks") else ""))
@@ -834,7 +834,7 @@ def build_context(conn, settings, an, header: list[str] | None = None) -> str:
     L += ["", "## backlog.md" + ("" if len(bl) <= 250 else f" (first 250 of {len(bl)} lines; read the file for the rest: {store.path('backlog.md')})"),
           "\n".join(bl[:250]).strip() or "(empty)"]
     L += ["", "## journal.md (last 40 lines)", tail_lines(store.read("journal.md"), 40).strip() or "(empty)"]
-    L += ["", "## Tools", "swe orch submit/merge/retry/reject/keep/handled/log/ask/resolve/review/status — see `swe orch -h`."]
+    L += ["", "## Tools", "proctor orch submit/merge/retry/reject/keep/handled/log/ask/resolve/review/status — see `proctor orch -h`."]
     return "\n".join(L)
 
 
@@ -1013,7 +1013,7 @@ def cmd_retry(a, conn):
     extra = ""
     if rv_bad and BranchView(p).job_branch(j)["exists"]:
         status, r, rid = broker_request(conn, "delete_branch", j["id"], {"project": j["project"], "job_id": j["id"]}, WAIT["delete_branch"])
-        extra = f"; branch swe/{j['id']} " + ("deleted" if status == "done" else f"NOT deleted ({r.get('error')})")
+        extra = f"; branch proctor/{j['id']} " + ("deleted" if status == "done" else f"NOT deleted ({r.get('error')})")
     emit(a, {**res, "retry_of": j["id"]}, f"{res['id']} (retry of {j['id']}{extra})")
 
 
@@ -1078,7 +1078,7 @@ def cmd_merge(a, conn):
     o = p["orchestrator"]
     st = Store(j["project"]).snapshot(init=False)
     if o["merge"] != "audit":
-        raise OrchError(f"merge refused: project {j['project']} has merge = {o['merge']!r}; the owner merges. Use `swe orch keep {j['id']}`.")
+        raise OrchError(f"merge refused: project {j['project']} has merge = {o['merge']!r}; the owner merges. Use `proctor orch keep {j['id']}`.")
     if j["state"] != "ready_for_review":
         raise OrchError(f"merge refused: {j['id']} is {j['state']}, not ready_for_review")
     h = st["handled"].get(j["id"])
@@ -1091,7 +1091,7 @@ def cmd_merge(a, conn):
     aid = (a.approved or "").upper()
     if gated and not aid:
         raise OrchError(f"merge refused: needs owner approval ({', '.join(gated)}); ask the owner with "
-                        "`swe orch ask`, then merge with --approved A<n> once decisions.md says 'approve A<n>'")
+                        "`proctor orch ask`, then merge with --approved A<n> once decisions.md says 'approve A<n>'")
     owner_ok = False
     if aid:
         if not re.fullmatch(r"A\d+", aid):
@@ -1109,13 +1109,13 @@ def cmd_merge(a, conn):
         rv = stored_review(j)
         if rv is None:
             raise OrchError(f"merge refused: no cross-model review for candidate {(j['candidate_commit'] or '')[:12]}; run "
-                            f"`swe orch qa {j['id']}` first (an owner approval via --approved A<n> overrides)")
+                            f"`proctor orch qa {j['id']}` first (an owner approval via --approved A<n> overrides)")
         if rv["verdict"] != "approve":
             raise OrchError(f"merge refused: cross-model review by {rv['model']} says {rv['verdict'].upper()}: {rv.get('summary', '')}\n"
                             + "\n".join(f"  - [{i['severity']}] {i['file']}{':' + str(i['line']) if i.get('line') else ''}: {i['what']} ({i['why']})"
                                         for i in rv.get("issues") or [])
-                            + f"\nAct on it: `swe orch retry {j['id']} --note \"<the issues above>\"` (new job on a fresh base) or "
-                              f"`swe orch reject {j['id']} --reason ...`; if the owner approves anyway (`swe orch ask`), merge with --approved A<n>.")
+                            + f"\nAct on it: `proctor orch retry {j['id']} --note \"<the issues above>\"` (new job on a fresh base) or "
+                              f"`proctor orch reject {j['id']} --reason ...`; if the owner approves anyway (`proctor orch ask`), merge with --approved A<n>.")
     status, r, rid = broker_request(conn, "merge", j["id"], {"project": j["project"], "job_id": j["id"]}, WAIT["merge"], cancel_on_timeout=True)
     if status != "done":
         raise OrchError(f"merge failed (request {rid}): {r.get('error')}")
@@ -1138,7 +1138,7 @@ def cmd_merge(a, conn):
             L.append(f"push: {json.dumps(pu, default=str)}")
         emit(a, {"job": j["id"], **r}, "\n".join(L))
         return
-    hint = " Use `swe orch retry %s` to redo it on the new base." % j["id"] if r.get("needs_rebase") else ""
+    hint = " Use `proctor orch retry %s` to redo it on the new base." % j["id"] if r.get("needs_rebase") else ""
     raise OrchError(f"not merged: {r.get('reason') or 'unknown reason'}.{hint}")
 
 
@@ -1157,9 +1157,9 @@ def cmd_qa(a, conn):
     j = db.job(conn, j["id"])
     L = [f"cross-model review of {j['id']} by {r.get('model')}" + (" (cached)" if r.get("cached") else f" (${r.get('cost', 0):.4f})")] + review_lines(j, p, settings)
     if r["verdict"] == "approve":
-        L.append(f"next: `swe orch merge {j['id']}`")
+        L.append(f"next: `proctor orch merge {j['id']}`")
     else:
-        L.append(f"next: `swe orch retry {j['id']} --note \"<issues>\"` or `swe orch reject {j['id']} --reason ...`, or ask the owner and merge with --approved A<n>")
+        L.append(f"next: `proctor orch retry {j['id']} --note \"<issues>\"` or `proctor orch reject {j['id']} --reason ...`, or ask the owner and merge with --approved A<n>")
     emit(a, {"job": j["id"], **r}, "\n".join(L))
 
 

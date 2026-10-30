@@ -15,14 +15,14 @@ performed, limitations, and any unresolved questions. Stop when acceptance crite
 task is blocked. Save a checkpoint before switching strategies."""
 
 REPORT_SPEC = """\
-Before you finish, write a JSON report to the file named in $SWE_REPORT (outside the repository):
+Before you finish, write a JSON report to the file named in $PROCTOR_REPORT (outside the repository):
 {"status": "done" | "blocked" | "needs_input",
  "summary": "<what changed, 1-5 sentences>",
  "checks_run": ["<exact command> -> <result>", ...],
  "limitations": ["..."], "questions": ["..."]}
 Use "needs_input" when the requirements are ambiguous or contradictory, "blocked" when the
 environment prevents the work. Checkpoints: append one line per milestone/strategy change to
-the file named in $SWE_CHECKPOINT. Do not commit; leave changes in the working tree.
+the file named in $PROCTOR_CHECKPOINT. Do not commit; leave changes in the working tree.
 The supervisor re-runs every registered check itself on a fresh checkout; your claims are not
 used as evidence."""
 
@@ -59,7 +59,7 @@ def task_prompt(job, project, baseline: list[dict]) -> str:
 
 ## Project
 {project.get('name', project['id'])}. Base branch `{job['base_branch']}`, base commit `{job['base_commit']}`.
-You are in a fresh, isolated checkout at /work (branch `swe/{job['id']}`). There is no network
+You are in a fresh, isolated checkout at /work (branch `proctor/{job['id']}`). There is no network
 access except the model API; dependencies are preinstalled in the image. Do not try to install
 packages or reach the internet.
 
@@ -114,7 +114,7 @@ class Adapter:
 
 
 class ClaudeCode(Adapter):
-    """Claude Code CLI in print mode, stream-json events, pointed at the swe-pilot gateway."""
+    """Claude Code CLI in print mode, stream-json events, pointed at the proctor gateway."""
     name = "claude-code"
     resumable = True
 
@@ -166,9 +166,9 @@ class Codex(Adapter):
 
     def env(self, job, attempt, token, settings):
         gw = settings["gateway"]
-        return {"SWE_GATEWAY_URL": f"http://{gw['bind']}:{gw['port']}/v1", "SWE_GATEWAY_TOKEN": token,
-                "CODEX_HOME": "/home/swe/.codex", "NO_COLOR": "1", "RUST_LOG": "warn",
-                "SWE_REASONING": settings.get("harness", {}).get("codex_reasoning_effort", "medium")}
+        return {"PROCTOR_GATEWAY_URL": f"http://{gw['bind']}:{gw['port']}/v1", "PROCTOR_GATEWAY_TOKEN": token,
+                "CODEX_HOME": "/home/proctor/.codex", "NO_COLOR": "1", "RUST_LOG": "warn",
+                "PROCTOR_REASONING": settings.get("harness", {}).get("codex_reasoning_effort", "medium")}
 
     def parse(self, out_dir):
         res = {"session_id": None, "result": None, "is_error": None, "subtype": None,

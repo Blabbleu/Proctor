@@ -10,10 +10,10 @@ import time
 import tomllib
 from pathlib import Path
 
-ETC = Path(os.environ.get("SWE_ETC", "/etc/swe-pilot"))
-STATE = Path(os.environ.get("SWE_STATE", "/var/lib/swe-pilot"))
+ETC = Path(os.environ.get("PROCTOR_ETC", "/etc/proctor"))
+STATE = Path(os.environ.get("PROCTOR_STATE", "/var/lib/proctor"))
 APP = Path(__file__).resolve().parent
-SOCKET = Path(os.environ.get("SWE_SOCKET", "/run/swe-pilot/api.sock"))
+SOCKET = Path(os.environ.get("PROCTOR_SOCKET", "/run/proctor/api.sock"))
 
 # Visible job states (design doc vocabulary).
 ACTIVE = ("preparing", "implementing", "validating", "repairing", "publishing")
@@ -123,7 +123,7 @@ def load_project(pid: str) -> dict:
     for rel in data["copy"] + data["mount_ro"] + ([data["lock"]] if data["lock"] else []):
         if not _safe_rel(rel):
             raise ProjectError(f"{f}: [data] path {rel!r} must be relative without '..'")
-    # [orchestrator]: autonomous planning/review on top of swe-pilot; off unless the project opts in.
+    # [orchestrator]: autonomous planning/review on top of proctor; off unless the project opts in.
     o = p.setdefault("orchestrator", {})
     o.setdefault("enabled", False)
     o.setdefault("brief", "orchestrator.md")

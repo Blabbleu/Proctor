@@ -3,12 +3,12 @@ requires = ["setuptools>=61"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "swe-pilot"
+name = "proctor"
 version = "0.1.0.dev0"
 description = "Offline-testable coding task control plane"
 requires-python = ">=3.11"
 dependencies = []
 
 [tool.setuptools.packages.find]
-include = ["swe_pilot*"]
+include = ["proctor*"]
 namespaces = true

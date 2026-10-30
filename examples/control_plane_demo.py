@@ -18,18 +18,18 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--json', action='store_true')
     args = parser.parse_args()
-    with tempfile.TemporaryDirectory(prefix='swe-demo-') as tmp:
+    with tempfile.TemporaryDirectory(prefix='proctor-demo-') as tmp:
         root = Path(tmp)
         etc, state = root / 'etc', root / 'state'
         shutil.copytree(ROOT / 'config', etc)
         state.mkdir()
-        os.environ['SWE_ETC'] = str(etc)
-        os.environ['SWE_STATE'] = str(state)
+        os.environ['PROCTOR_ETC'] = str(etc)
+        os.environ['PROCTOR_STATE'] = str(state)
         # Root cannot be a project owner. No repository operations are performed.
         owner = pwd.getpwuid(os.geteuid()).pw_name if os.geteuid() else 'developer'
         project_file = etc / 'projects/example/project.toml'
         project_file.write_text(project_file.read_text().replace('owner = "developer"', 'owner = ' + json.dumps(owner)))
-        from swe_pilot import cli, common, db, orch
+        from proctor import cli, common, db, orch
         conn = sqlite3.connect(str(state / 'demo.db'), isolation_level=None)
         conn.row_factory = sqlite3.Row
         try:

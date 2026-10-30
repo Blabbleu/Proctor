@@ -1,8 +1,8 @@
 [safe]
 	directory = *
 [user]
-	name = swe-pilot worker
-	email = swe-pilot@localhost
+	name = proctor worker
+	email = proctor@localhost
 [init]
 	defaultBranch = main
 [advice]

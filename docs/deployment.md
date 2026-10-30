@@ -5,7 +5,7 @@ The offline development path is the supported quick start. The live engine is pr
 ## Requirements
 
 - Linux with Python 3.11+, Git, Docker Engine, systemd, `runuser`, and working IPv4/IPv6 iptables compatibility.
-- A trusted administrator, a `swe` service account, and a separate non-root account owning each source repository.
+- A trusted administrator, a `proctor` service account, and a separate non-root account owning each source repository.
 - Adequate disk headroom and container resources; example limits are configuration, not a performance benchmark.
 - Hermes Agent installed through its [official instructions](https://hermes-agent.nousresearch.com/docs/), with the provider credential/quota integrations used by `broker.py` available in its Python environment.
 - Operator-installed Claude Code and optionally Codex, obtained from their official distributions. These binaries are not included. The base-image build currently expects a Claude binary even for mock/Codex use; it is not a fully harness-independent bootstrap.
@@ -16,14 +16,14 @@ Read [SECURITY.md](../SECURITY.md) first. Docker-group membership grants root-eq
 
 | Location | Purpose / ownership |
 |---|---|
-| `/opt/swe-pilot` | reviewed application source, root-owned, not worker-writable |
-| `/etc/swe-pilot/settings.toml` | trusted settings, typically root-owned and service-group-readable |
-| `/etc/swe-pilot/projects/<id>` | trusted registry, image recipe, brief and optional roles |
-| `/var/lib/swe-pilot` | service-owned state, job artifacts, mirrors and build context |
-| `/run/swe-pilot` | runtime lock/socket area as used by the code |
-| `/run/swe-pilot-xfer` | broker transfer area |
+| `/opt/proctor` | reviewed application source, root-owned, not worker-writable |
+| `/etc/proctor/settings.toml` | trusted settings, typically root-owned and service-group-readable |
+| `/etc/proctor/projects/<id>` | trusted registry, image recipe, brief and optional roles |
+| `/var/lib/proctor` | service-owned state, job artifacts, mirrors and build context |
+| `/run/proctor` | runtime lock/socket area as used by the code |
+| `/run/proctor-xfer` | broker transfer area |
 
-`SWE_ETC` and `SWE_STATE` override configuration/state paths for offline development. They do not make the entire live service relocatable: unit files, helper commands, runtime transfer paths, and host integrations still have deployment assumptions.
+`PROCTOR_ETC` and `PROCTOR_STATE` override configuration/state paths for offline development. They do not make the entire live service relocatable: unit files, helper commands, runtime transfer paths, and host integrations still have deployment assumptions.
 
 ## Configure deliberately
 
@@ -33,8 +33,8 @@ Read [SECURITY.md](../SECURITY.md) first. Docker-group membership grants root-eq
 4. Install the harness binaries under a non-worker-writable directory. `ensure_base` in `supervisor.py` stages them into a build context. Codex's matching `codex-code-mode-host` helper must be available next to the configured Codex binary using the filename convention in that function. Review external licenses before any redistribution.
 5. Copy `config/projects/example` to a new registry ID and edit its matching `id`, source path, non-root owner, base branch, check commands, and dependency image. Configure all dependencies at image-build time: worker/check execution cannot download packages.
 6. Leave `[orchestrator].enabled = false`, `merge = "none"`, `push = false`, and `[publish].remote_push = false` during initial verification. Start with a disposable repository and the scripted mock harness.
-7. Review `bin/swe-firewall` and gateway settings together. Its network/interface/subnet/port values must match. Ensure no subnet collision. The script changes host firewall rules: inspect it before running and retain an out-of-band recovery path.
-8. Install reviewed unit files, configure an operator `swe` CLI wrapper (or use `python3 -m swe_pilot.cli` from the application directory), reload systemd, then enable the firewall, broker, and supervisor in dependency order.
+7. Review `bin/proctor-firewall` and gateway settings together. Its network/interface/subnet/port values must match. Ensure no subnet collision. The script changes host firewall rules: inspect it before running and retain an out-of-band recovery path.
+8. Install reviewed unit files, configure an operator `proctor` CLI wrapper (or use `python3 -m proctor.cli` from the application directory), reload systemd, then enable the firewall, broker, and supervisor in dependency order.
 
 Do not start a copied broker unit until its Hermes interpreter and credential integration are correct. Do not edit production registry or firewall settings from inside a worker.
 
@@ -43,16 +43,16 @@ Do not start a copied broker unit until its Hermes interpreter and credential in
 Run these only in the operator-configured environment; unlike the demo, they address real service state:
 
 ```bash
-swe projects
-swe doctor
-swe usage
-swe list
-swe orch status
+proctor projects
+proctor doctor
+proctor usage
+proctor list
+proctor orch status
 ```
 
 A complete first integration test should submit a mock task against the disposable project and verify the candidate SHA and patch, actual supervisor check logs, attempt records, and refusal/recovery behavior. The example sets `[publish].local_branch = false`, so no final branch is published. To test local branch publication, deliberately enable that option for the disposable project and verify the final branch SHA. Do not infer this from the offline demo.
 
-Use `swe orch context <project>` to inspect a planner briefing. Do **not** use `swe orch gate` as a read-only status command: it updates wake and decision markers.
+Use `proctor orch context <project>` to inspect a planner briefing. Do **not** use `proctor orch gate` as a read-only status command: it updates wake and decision markers.
 
 ## Enabling real models and autonomy
 

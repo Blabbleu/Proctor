@@ -39,12 +39,12 @@ import traceback
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-from swe_pilot import db  # noqa: E402
-from swe_pilot.common import (PROVIDER_LABEL, QUOTA_ROW, STATE, TERMINAL, WORKER_STATES, ProjectError,  # noqa: E402
+from proctor import db  # noqa: E402
+from proctor.common import (PROVIDER_LABEL, QUOTA_ROW, STATE, TERMINAL, WORKER_STATES, ProjectError,  # noqa: E402
                               load_project, load_settings, model_allowed, now, price_for, provider_for,
                               read_small, usage_cost)
 
-log = logging.getLogger("swe-broker")
+log = logging.getLogger("proctor-broker")
 HERMES_AGENT = "/usr/local/lib/hermes-agent"
 
 
@@ -112,7 +112,7 @@ class CodexUpstream:
     def headers(self, tok):
         from agent.codex_headers import codex_account_headers
         h = {"authorization": "Bearer " + tok, "originator": "codex_exec",
-             "user-agent": "codex_exec/0.161.0 (swe-pilot)"}
+             "user-agent": "codex_exec/0.161.0 (proctor)"}
         h.update(codex_account_headers(tok))
         return h
 
@@ -190,7 +190,7 @@ def record_quota(conn, headers, source="gateway", provider="anthropic"):
 
 class Gateway(http.server.BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
-    server_version = "swe-gateway"
+    server_version = "proctor-gateway"
 
     def log_message(self, fmt, *a):
         log.debug("gw %s", fmt % a)
@@ -208,7 +208,7 @@ class Gateway(http.server.BaseHTTPRequestHandler):
                      (job_id, attempt_id, now(), kind, reason))
         db.event(conn, job_id, "gateway", f"refused request: {kind}: {reason}")
         self._reply(code, "invalid_request_error" if code == 400 else "authentication_error",
-                    f"swe-pilot gateway refused the request ({kind}): {reason}. Stop and report.")
+                    f"proctor gateway refused the request ({kind}): {reason}. Stop and report.")
 
     def do_GET(self):
         n = int(self.headers.get("content-length") or 0)
@@ -216,7 +216,7 @@ class Gateway(http.server.BaseHTTPRequestHandler):
             self.rfile.read(n)
         if self.path == "/healthz":
             return self._reply(200, "ok", "ok")
-        self._reply(404, "not_found_error", "not available through swe-pilot gateway")
+        self._reply(404, "not_found_error", "not available through proctor gateway")
 
     def do_POST(self):
         conn = self.server.conn_factory()
@@ -251,7 +251,7 @@ class Gateway(http.server.BaseHTTPRequestHandler):
                                "token belongs to an attempt that is no longer current", code=401)
         path = self.path.split("?")[0]
         if path not in ("/v1/messages", "/v1/messages/count_tokens", "/v1/responses"):
-            return self._reply(404, "not_found_error", f"{path} not available through swe-pilot gateway")
+            return self._reply(404, "not_found_error", f"{path} not available through proctor gateway")
         provider = "openai-codex" if path == "/v1/responses" else "anthropic"
         try:
             body = json.loads(raw or b"{}")
@@ -520,7 +520,7 @@ def handle_sync(conn, req, payload):
     head = owner_git(src["owner"], src["path"], "rev-parse", f"refs/heads/{p['base_branch']}").stdout.strip()
     remote = owner_git(src["owner"], src["path"], "remote", "get-url", p["publish"].get("remote", "origin"),
                        check=False).stdout.strip()
-    shutil.chown(out, "swe", "swe")
+    shutil.chown(out, "proctor", "proctor")
     os.chmod(out, 0o640)
     return {"bundle": str(out), "head": head, "remote": remote}
 
@@ -529,14 +529,14 @@ def handle_publish(conn, req, payload):
     p = load_project(payload["project"])
     src = p["source"]
     branch, sha, tree = payload["branch"], payload["sha"], payload["tree"]
-    if not branch.startswith("swe/"):
-        raise RuntimeError("publisher only writes swe/* branches")
+    if not branch.startswith("proctor/"):
+        raise RuntimeError("publisher only writes proctor/* branches")
     res = {"branch": branch, "sha": sha, "local": None, "remote": None}
     cur = owner_git(src["owner"], src["path"], "rev-parse", "--verify", "-q", f"refs/heads/{branch}", check=False).stdout.strip()
     if cur and cur != sha:
         raise RuntimeError(f"local branch {branch} already exists at {cur[:12]} (expected {sha[:12]}); not overwriting")
     if not cur:
-        tmpd = Path(tempfile.mkdtemp(prefix="swe-xfer-", dir="/run/swe-pilot-xfer"))
+        tmpd = Path(tempfile.mkdtemp(prefix="proctor-xfer-", dir="/run/proctor-xfer"))
         try:
             os.chmod(tmpd, 0o711)
             b = tmpd / "candidate.bundle"
@@ -593,8 +593,8 @@ def open_draft_pr(p, branch, payload):
     if found:
         return f"exists ({found[0]['state'].lower()}): {found[0]['url']}"
     base = p["source"].get("base", "main")
-    title = f"[swe-pilot] {payload.get('title') or branch}"[:240]
-    body = (payload.get("pr_body") or "")[:60000] + "\n\n_Opened as a draft by swe-pilot. Review and merge are yours._"
+    title = f"[proctor] {payload.get('title') or branch}"[:240]
+    body = (payload.get("pr_body") or "")[:60000] + "\n\n_Opened as a draft by proctor. Review and merge are yours._"
     r = owner_gh(src["owner"], src["path"], "pr", "create", "--draft", "--base", base, "--head", branch,
                  "--title", title, "--body", body, timeout=180)
     if r.returncode != 0:
@@ -696,10 +696,10 @@ def handle_snapshot(conn, req, payload):
         raise RuntimeError(f"only {free:.1f} GiB free under {STATE} (minimum {need})")
     jd = STATE / "jobs" / job["id"]
     snap = jd / "data-snapshot"
-    swe = pwd.getpwnam("swe")
+    pw = pwd.getpwnam("proctor")
     if not jd.exists():
         jd.mkdir(parents=True)
-        os.chown(jd, swe.pw_uid, swe.pw_gid)
+        os.chown(jd, pw.pw_uid, pw.pw_gid)
         os.chmod(jd, 0o2775)
     if snap.exists():
         shutil.rmtree(snap)
@@ -732,12 +732,12 @@ def handle_snapshot(conn, req, payload):
             raise
     for dp, dns, fns in os.walk(snap):
         for n in dns + fns:
-            os.lchown(os.path.join(dp, n), swe.pw_uid, swe.pw_gid)
+            os.lchown(os.path.join(dp, n), pw.pw_uid, pw.pw_gid)
         for n in fns:
             os.chmod(os.path.join(dp, n), 0o660)
         for n in dns:
             os.chmod(os.path.join(dp, n), 0o2770)
-    os.chown(snap, swe.pw_uid, swe.pw_gid)
+    os.chown(snap, pw.pw_uid, pw.pw_gid)
     os.chmod(snap, 0o2770)
     res["path"] = str(snap)
     db.event(conn, job["id"], "data", f"data snapshot: {len(res['copied'])} entries, {res['bytes'] / 2**20:.1f} MiB",
@@ -790,7 +790,7 @@ def handle_merge(conn, req, payload):
         raise RuntimeError(f"project {p['id']} does not allow broker merges ([orchestrator].merge = {o['merge']!r})")
     if job["state"] != "ready_for_review":
         raise RuntimeError(f"job {job['id']} is {job['state']}, not ready_for_review")
-    branch, cand = f"swe/{job['id']}", job["candidate_commit"]
+    branch, cand = f"proctor/{job['id']}", job["candidate_commit"]
     pub = json.loads(job["publication"] or "{}")
     if not cand or pub.get("branch") != branch or pub.get("local") not in ("created", "exists"):
         raise RuntimeError(f"job {job['id']} has no local review branch in its publication record")
@@ -859,8 +859,8 @@ def handle_delete_branch(conn, req, payload):
     src = p["source"]
     owner, repo = src["owner"], src["path"]
     job = _job_for(conn, payload, p["id"])
-    branch = f"swe/{job['id']}"
-    if not re.fullmatch(r"swe/j[0-9a-z-]+", branch):
+    branch = f"proctor/{job['id']}"
+    if not re.fullmatch(r"proctor/j[0-9a-z-]+", branch):
         raise RuntimeError(f"refusing to delete {branch!r}")
     if job["state"] not in TERMINAL:
         raise RuntimeError(f"job {job['id']} is still {job['state']}")
@@ -900,7 +900,7 @@ def handle_branch_state(conn, req, payload):
         if not isinstance(jid, str) or not re.fullmatch(r"j[0-9a-z-]+", jid):
             res["jobs"][str(jid)[:40]] = {"error": "invalid job id"}
             continue
-        sha = _rev(owner, repo, f"refs/heads/swe/{jid}")
+        sha = _rev(owner, repo, f"refs/heads/proctor/{jid}")
         row = db.job(conn, jid)
         cand = row["candidate_commit"] if row and row["project"] == p["id"] else None
         probe = sha or (cand if cand and _rev(owner, repo, cand) else None)
@@ -1165,7 +1165,7 @@ def handle_review(conn, req, payload):
         f = art / "review.json"
         f.write_text(json.dumps(res, indent=1))
         try:
-            shutil.chown(f, "swe", "swe")
+            shutil.chown(f, "proctor", "proctor")
             os.chmod(f, 0o640)
         except (KeyError, OSError):
             pass
@@ -1277,8 +1277,8 @@ def main():
     CODEX = CodexUpstream()
     if not CODEX.token():
         log.warning("no ChatGPT/Codex subscription credential resolved; GPT requests will be refused")
-    Path("/run/swe-pilot-xfer").mkdir(exist_ok=True)
-    os.chmod("/run/swe-pilot-xfer", 0o711)
+    Path("/run/proctor-xfer").mkdir(exist_ok=True)
+    os.chmod("/run/proctor-xfer", 0o711)
 
     def conn_factory():
         return db.connect()

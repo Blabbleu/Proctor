@@ -1,16 +1,16 @@
 [Unit]
-Description=swe-pilot supervisor (deterministic job state machine; one active runner)
-After=swe-broker.service docker.service
-Wants=swe-broker.service
+Description=proctor supervisor (deterministic job state machine; one active runner)
+After=proctor-broker.service docker.service
+Wants=proctor-broker.service
 
 [Service]
 Type=simple
-User=swe
-Group=swe
+User=proctor
+Group=proctor
 SupplementaryGroups=docker
 Environment=PYTHONUNBUFFERED=1
-Environment=HOME=/var/lib/swe-pilot
-ExecStart=/usr/bin/python3 /opt/swe-pilot/swe_pilot/supervisor.py
+Environment=HOME=/var/lib/proctor
+ExecStart=/usr/bin/python3 /opt/proctor/proctor/supervisor.py
 Restart=always
 RestartSec=5
 # Containers are owned by dockerd, not this cgroup: stopping the supervisor leaves runners
@@ -22,7 +22,7 @@ NoNewPrivileges=yes
 ProtectSystem=strict
 ProtectHome=yes
 PrivateTmp=yes
-ReadWritePaths=/var/lib/swe-pilot
+ReadWritePaths=/var/lib/proctor
 
 [Install]
 WantedBy=multi-user.target

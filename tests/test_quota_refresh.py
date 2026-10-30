@@ -9,10 +9,10 @@ from pathlib import Path
 
 _sandbox = tempfile.TemporaryDirectory()
 atexit.register(_sandbox.cleanup)
-os.environ["SWE_ETC"] = str(Path(_sandbox.name) / "etc")
-os.environ["SWE_STATE"] = str(Path(_sandbox.name) / "state")
+os.environ["PROCTOR_ETC"] = str(Path(_sandbox.name) / "etc")
+os.environ["PROCTOR_STATE"] = str(Path(_sandbox.name) / "state")
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from swe_pilot import broker, db  # noqa: E402
+from proctor import broker, db  # noqa: E402
 
 SETTINGS = {"quota": {"enabled": True, "max_5h": 0.90, "max_7d": 0.90},
             "review": {"for_openai-codex": ["claude-sonnet-5-5", "gpt-5.6-terra"]}}

@@ -1,6 +1,6 @@
-"""`swe` command-line interface: submit / status / list / logs / cancel / retry / usage / projects / doctor.
+"""`proctor` command-line interface: submit / status / list / logs / cancel / retry / usage / projects / doctor.
 
-Works for root and members of group `swe`. Writes only to the job store; the supervisor does the work.
+Works for root and members of group `proctor`. Writes only to the job store; the supervisor does the work.
 """
 from __future__ import annotations
 
@@ -12,11 +12,11 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-from swe_pilot import db, harness  # noqa: E402
-from swe_pilot.common import (ACTIVE, JOB_ID_RE, STATE, TERMINAL, ProjectError, iso, list_projects,  # noqa: E402
+from proctor import db, harness  # noqa: E402
+from proctor.common import (ACTIVE, JOB_ID_RE, STATE, TERMINAL, ProjectError, iso, list_projects,  # noqa: E402
                               load_project, load_settings, model_allowed, new_job_id, now, tail_text,
                               PROVIDER_LABEL, QUOTA_ROW, provider_for, role_model)
-from swe_pilot.broker import quota_block_reason, remaining_allowance  # noqa: E402
+from proctor.broker import quota_block_reason, remaining_allowance  # noqa: E402
 
 
 def out(obj, as_json, text):
@@ -72,7 +72,7 @@ def cmd_submit(a, conn):
     if hname != "mock" and state == "queued":
         b = settings.get("budget", {})
         if not (b.get("per_task_usd", 0) > 0 and b.get("per_day_usd", 0) > 0 and b.get("per_month_usd", 0) > 0):
-            sys.exit("no spending ceiling configured in /etc/swe-pilot/settings.toml [budget]; refusing paid runs")
+            sys.exit("no spending ceiling configured in /etc/proctor/settings.toml [budget]; refusing paid runs")
     key = a.key or None
     if key:
         ex = conn.execute("SELECT id, state FROM jobs WHERE idem_key=? AND project=?", (key, p["id"])).fetchone()
@@ -263,7 +263,7 @@ def cmd_doctor(a, conn):
         nonlocal ok
         ok &= bool(cond)
         print(f"{'ok ' if cond else 'BAD'} {name}" + (f" — {detail}" if detail else ""))
-    for svc in ("swe-supervisor", "swe-broker"):
+    for svc in ("proctor-supervisor", "proctor-broker"):
         r = subprocess.run(["systemctl", "is-active", svc], capture_output=True, text=True)
         chk(f"service {svc}", r.stdout.strip() == "active", r.stdout.strip())
     s = load_settings()
@@ -281,7 +281,7 @@ def cmd_doctor(a, conn):
 
 
 def main():
-    ap = argparse.ArgumentParser(prog="swe", description="swe-pilot: autonomous coding tasks with independent validation")
+    ap = argparse.ArgumentParser(prog="proctor", description="proctor: autonomous coding tasks with independent validation")
     ap.add_argument("--json", action="store_true")
     sp = ap.add_subparsers(dest="cmd", required=True)
     s = sp.add_parser("submit", help="queue a task")
@@ -320,8 +320,8 @@ def main():
     sp.add_parser("usage")
     sp.add_parser("projects")
     sp.add_parser("doctor")
-    o = sp.add_parser("orch", help="orchestrator tools (gate/context/review/submit/merge/...); see `swe orch -h`")
-    from swe_pilot import orch  # noqa: E402  (only the orch sub-commands depend on it)
+    o = sp.add_parser("orch", help="orchestrator tools (gate/context/review/submit/merge/...); see `proctor orch -h`")
+    from proctor import orch  # noqa: E402  (only the orch sub-commands depend on it)
     orch.add_parsers(o.add_subparsers(dest="orch_cmd", required=True, metavar="COMMAND"))
     a = ap.parse_args()
     os.umask(0o007)

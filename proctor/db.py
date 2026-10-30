@@ -1,4 +1,4 @@
-"""SQLite job store. One file, WAL mode, shared by supervisor (user swe) and broker (root)."""
+"""SQLite job store. One file, WAL mode, shared by supervisor (user proctor) and broker (root)."""
 from __future__ import annotations
 
 import json
@@ -153,7 +153,7 @@ CREATE TABLE IF NOT EXISTS requests (
 
 
 def connect(path: Path | None = None) -> sqlite3.Connection:
-    path = path or (STATE / "db" / "swe.db")
+    path = path or (STATE / "db" / "proctor.db")
     conn = sqlite3.connect(str(path), timeout=30, isolation_level=None, check_same_thread=False)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA journal_mode=WAL")
@@ -164,7 +164,7 @@ def connect(path: Path | None = None) -> sqlite3.Connection:
         import grp
         import pwd
         try:
-            uid, gid = pwd.getpwnam("swe").pw_uid, grp.getgrnam("swe").gr_gid
+            uid, gid = pwd.getpwnam("proctor").pw_uid, grp.getgrnam("proctor").gr_gid
             for suf in ("", "-wal", "-shm"):
                 f = Path(str(path) + suf)
                 if f.exists():

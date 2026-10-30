@@ -1,4 +1,4 @@
-"""swe-pilot supervisor: deterministic job state machine. Runs as user `swe` under systemd.
+"""proctor supervisor: deterministic job state machine. Runs as user `proctor` under systemd.
 
 No LLM decides anything here. Process exit codes, check exit codes and file contents produced
 by trusted runner scripts drive every transition.
@@ -22,13 +22,13 @@ import time
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-from swe_pilot import db, harness  # noqa: E402
-from swe_pilot.common import (ACTIVE, APP, STATE, TERMINAL, ProjectError, db_meta_role, iso, load_project,  # noqa: E402
+from proctor import db, harness  # noqa: E402
+from proctor.common import (ACTIVE, APP, STATE, TERMINAL, ProjectError, db_meta_role, iso, load_project,  # noqa: E402
                               load_settings, now, path_protected, provider_for, read_small, role_paths,
                               role_violations, tail_text)
-from swe_pilot.broker import quota_block_reason, remaining_allowance  # noqa: E402
+from proctor.broker import quota_block_reason, remaining_allowance  # noqa: E402
 
-log = logging.getLogger("swe-supervisor")
+log = logging.getLogger("proctor-supervisor")
 RUNNER = APP.parent / "runner"
 STOP = False
 
@@ -57,25 +57,25 @@ def inspect(name):
     return {"state": json.loads(st), "labels": json.loads(labels)}
 
 
-def swe_gid():
-    return grp.getgrnam("swe").gr_gid
+def proctor_gid():
+    return grp.getgrnam("proctor").gr_gid
 
 
 def run_args(settings, project, name, labels, mounts, env, network, image, tmpfs_work=False):
     r = project["runner"]
-    a = ["run", "--name", name, "--user", f"{settings['runner']['uid']}:{swe_gid()}",
+    a = ["run", "--name", name, "--user", f"{settings['runner']['uid']}:{proctor_gid()}",
          "--cap-drop", "ALL", "--security-opt", "no-new-privileges", "--read-only",
          "--tmpfs", f"/tmp:rw,exec,nosuid,size={r['tmp_size']},mode=1777",
          "--memory", r["memory"], "--memory-swap", r["memory"], "--cpus", str(r["cpus"]),
          "--pids-limit", str(r["pids"]), "--log-opt", "max-size=5m", "--log-opt", "max-file=1",
-         "--network", network, "--hostname", "swe-runner", "--init"]
+         "--network", network, "--hostname", "proctor-runner", "--init"]
     if tmpfs_work:
-        a += ["--tmpfs", f"/work:rw,exec,nosuid,size={r.get('work_tmpfs', '1500m')},uid={settings['runner']['uid']},gid={swe_gid()},mode=2775"]
+        a += ["--tmpfs", f"/work:rw,exec,nosuid,size={r.get('work_tmpfs', '1500m')},uid={settings['runner']['uid']},gid={proctor_gid()},mode=2775"]
     for k, v in labels.items():
         a += ["--label", f"{k}={v}"]
     for src, dst, mode in mounts:
         a += ["-v", f"{src}:{dst}:{mode}"]
-    base_env = {"HOME": "/home/swe", "LANG": "C.UTF-8", "CI": "1"}
+    base_env = {"HOME": "/home/proctor", "LANG": "C.UTF-8", "CI": "1"}
     base_env.update(r.get("env", {}))
     base_env.update(env)
     for k, v in base_env.items():
@@ -203,14 +203,14 @@ class Supervisor:
     def short_report(self, job):
         icon = {"ready_for_review": "✅", "cancelled": "⏹", "needs_input": "❓"}.get(job["state"], "⚠️")
         cost = self.conn.execute("SELECT COALESCE(SUM(cost_usd),0), COUNT(*) FROM usage WHERE job_id=?", (job["id"],)).fetchone()
-        lines = [f"{icon} **swe {job['id']}** · {job['project']} · {job['state']}", f"{job['title']}"]
+        lines = [f"{icon} **proctor {job['id']}** · {job['project']} · {job['state']}", f"{job['title']}"]
         if job["state"] == "ready_for_review":
             pub = json.loads(job["publication"] or "{}")
             lines.append(f"Branch `{pub.get('branch')}` @ {(job['candidate_commit'] or '')[:10]} (base {(job['base_commit'] or '')[:10]})")
             lines.append(self.check_line(job["id"]))
         else:
             lines.append(f"Reason: {job['reason'][:300]}")
-        lines.append(f"Model calls: {cost[1]} · usage ≈ ${cost[0]:.2f} list-price · `swe status {job['id']}`")
+        lines.append(f"Model calls: {cost[1]} · usage ≈ ${cost[0]:.2f} list-price · `proctor status {job['id']}`")
         return "\n".join(lines)
 
     def check_line(self, job_id):
@@ -228,7 +228,7 @@ class Supervisor:
             return
         m = db.meta(job)
         rep = m.get("report") or {}
-        lines = [f"# swe-pilot {job['id']}: {job['title']}", "",
+        lines = [f"# proctor {job['id']}: {job['title']}", "",
                  f"- Project: {job['project']}  ·  state: **{job['state']}**  ·  reason: {job['reason']}",
                  f"- Harness: {job['harness']} / {job['model']}  ·  rounds: {job['round']}  ·  attempts: {job['attempt_seq']}",
                  f"- Base: {job['base_branch']} @ {job['base_commit']}", f"- Candidate: {job['candidate_commit']}",
@@ -267,7 +267,7 @@ class Supervisor:
 
     def root_rm(self, p: Path):
         """Remove a runner-owned tree with a throwaway container (runner uid may own files)."""
-        image = f"swe-base:{self.base_tag()}"
+        image = f"proctor-base:{self.base_tag()}"
         docker("run", "--rm", "--network", "none", "--cap-drop", "ALL", "--cap-add", "DAC_OVERRIDE", "--cap-add", "FOWNER",
                "--user", "0:0", "-v", f"{p.parent}:/p", image, "rm", "-rf", f"/p/{p.name}", timeout=300)
 
@@ -285,7 +285,7 @@ class Supervisor:
         return h.hexdigest()[:12]
 
     def ensure_base(self):
-        tag = f"swe-base:{self.base_tag()}"
+        tag = f"proctor-base:{self.base_tag()}"
         if docker("image", "inspect", tag).returncode == 0:
             return tag
         ctx = STATE / "build" / "base"
@@ -325,7 +325,7 @@ class Supervisor:
         for f in sorted(pdir.glob("*")):
             if f.is_file() and f.name != "project.toml":
                 h.update(f.name.encode() + f.read_bytes())
-        tag = f"swe-{project['id']}:{h.hexdigest()[:12]}"
+        tag = f"proctor-{project['id']}:{h.hexdigest()[:12]}"
         if docker("image", "inspect", tag).returncode == 0:
             return tag
         self.ev(job["id"], "image", f"building runner image {tag}")
@@ -348,12 +348,12 @@ class Supervisor:
 
     # ---------------------------------------------------------------- blocking helper containers
     def run_blocking(self, job, project, phase, mode, mounts, env, network="none", timeout=600, tmpfs_work=False):
-        name = f"swe-{job['id']}-{phase}"
+        name = f"proctor-{job['id']}-{phase}"
         docker("rm", "-f", name)
-        args = run_args(self.settings, project, name, {"swe.job": job["id"], "swe.phase": phase, "swe.blocking": "1"},
+        args = run_args(self.settings, project, name, {"proctor.job": job["id"], "proctor.phase": phase, "proctor.blocking": "1"},
                         mounts, env, network, job["image"], tmpfs_work=tmpfs_work)
         args.insert(1, "--rm")
-        args += ["bash", "/opt/swe/run.sh", mode]
+        args += ["bash", "/opt/proctor/run.sh", mode]
         r = docker(*args, timeout=timeout)
         return r.returncode, (r.stdout + r.stderr)[-2000:]
 
@@ -368,7 +368,7 @@ class Supervisor:
         rc, msg = self.run_blocking(job, project, f"export-{tag}", "export",
                                     [(str(jd / "work"), "/w", "ro"), (str(self.mirror(job["project"])), "/mirror", "ro"),
                                      (str(jd / "in"), "/job/in", "ro"), (str(out), "/job/out", "rw")],
-                                    {"SWE_BASE": job["base_commit"], "HOME": "/tmp"}, timeout=300)
+                                    {"PROCTOR_BASE": job["base_commit"], "HOME": "/tmp"}, timeout=300)
         if rc != 0:
             raise RuntimeError(f"export failed (exit {rc}): {msg}")
         art = self.mkdir(jd / "artifacts")
@@ -383,12 +383,12 @@ class Supervisor:
     # ---------------------------------------------------------------- detached phase containers
     def launch(self, job, project, phase, mode, mounts, env, network="none", minutes=30, tmpfs_work=False, kind=None):
         aid, seq = self.new_attempt(job, kind or phase)
-        name = f"swe-{job['id']}-{seq}-{phase}"
-        labels = {"swe.job": job["id"], "swe.attempt": aid, "swe.phase": phase}
-        args = run_args(self.settings, project, name, labels, mounts, {**env, "SWE_ATTEMPT": aid}, network, job["image"],
+        name = f"proctor-{job['id']}-{seq}-{phase}"
+        labels = {"proctor.job": job["id"], "proctor.attempt": aid, "proctor.phase": phase}
+        args = run_args(self.settings, project, name, labels, mounts, {**env, "PROCTOR_ATTEMPT": aid}, network, job["image"],
                         tmpfs_work=tmpfs_work)
         args.insert(1, "-d")
-        args += ["bash", "/opt/swe/run.sh", mode]
+        args += ["bash", "/opt/proctor/run.sh", mode]
         deadline = min(job["deadline"] or now() + minutes * 60, now() + minutes * 60)
         r = docker(*args, timeout=120)
         if r.returncode:
@@ -414,10 +414,10 @@ class Supervisor:
                 ro_map.append(f"{m['rel']}={i}")
             else:
                 mounts.append((m["src"], f"/work/{m['rel']}", "ro"))
-        return mounts, ({"SWE_DATA": "1", "SWE_RO_MAP": "|".join(ro_map)} if checks else {})
+        return mounts, ({"PROCTOR_DATA": "1", "PROCTOR_RO_MAP": "|".join(ro_map)} if checks else {})
 
     def prepare_mountpoints(self, project, work: Path):
-        """Create the swe-owned mount targets of [data].mount_ro in the task checkout (docker would make them root-owned)."""
+        """Create the proctor-owned mount targets of [data].mount_ro in the task checkout (docker would make them root-owned)."""
         base = work.resolve()
         for m in project["data"]["mount_ro"]:
             tgt = (work / m).resolve()
@@ -450,7 +450,7 @@ class Supervisor:
         self.upd(job["id"], step=stage.split("-")[0])
         mounts = [(str(self.mirror(job["project"])), "/mirror", "ro"), (str(stage_in), "/job/in", "ro"),
                   (str(out), "/job/out", "rw")]
-        env = {"SWE_COMMIT": commit, "SWE_BASE_COMMIT": job["base_commit"], "SWE_BRANCH": f"swe/{job['id']}", "HOME": "/tmp"}
+        env = {"PROCTOR_COMMIT": commit, "PROCTOR_BASE_COMMIT": job["base_commit"], "PROCTOR_BRANCH": f"proctor/{job['id']}", "HOME": "/tmp"}
         if any(c.get("data") for c in project["checks"]):
             dmounts, denv = self.data_mounts(job, project, checks=True)
             mounts += dmounts
@@ -477,21 +477,21 @@ class Supervisor:
         self.upd(job["id"], state=state, step="worker")
         job = db.job(self.conn, job["id"])
         # The token is minted for the attempt id the launch will create next.
-        token = "swe-" + secrets.token_urlsafe(32)
+        token = "proctor-" + secrets.token_urlsafe(32)
         next_aid = f"{job['id']}-a{job['attempt_seq'] + 1}"
         self.conn.execute("INSERT INTO tokens(hash, job_id, attempt_id, created_at) VALUES (?,?,?,?)",
                           (hashlib.sha256(token.encode()).hexdigest(), job["id"], next_aid, now()))
         left, _ = remaining_allowance(self.conn, self.settings, job["id"])
-        env = {"SWE_HARNESS": job["harness"], "SWE_MODEL": job["model"] or "", "SWE_SESSION": job["session_id"] or "",
-               "SWE_MAX_TURNS": str(project["limits"]["max_turns"]), "SWE_REPORT": "/job/out/report.json",
-               "SWE_CHECKPOINT": "/job/out/checkpoint.log", "SWE_MOCK": db.meta(job).get("mock", "good"),
-               "SWE_ROUND": str(job["round"]), "SWE_MAX_BUDGET": f"{max(left, 0.01):.2f}" if adapter.network else ""}
+        env = {"PROCTOR_HARNESS": job["harness"], "PROCTOR_MODEL": job["model"] or "", "PROCTOR_SESSION": job["session_id"] or "",
+               "PROCTOR_MAX_TURNS": str(project["limits"]["max_turns"]), "PROCTOR_REPORT": "/job/out/report.json",
+               "PROCTOR_CHECKPOINT": "/job/out/checkpoint.log", "PROCTOR_MOCK": db.meta(job).get("mock", "good"),
+               "PROCTOR_ROUND": str(job["round"]), "PROCTOR_MAX_BUDGET": f"{max(left, 0.01):.2f}" if adapter.network else ""}
         if resume and adapter.resumable and job["session_id"]:
-            env["SWE_RESUME"] = job["session_id"]
+            env["PROCTOR_RESUME"] = job["session_id"]
         env.update(adapter.env(job, next_aid, token, self.settings))
         network = self.settings["gateway"]["network"] if adapter.network else "none"
         minutes = project["limits"]["worker_minutes"]
-        mounts = [(str(jd / "work"), "/work", "rw"), (str(jd / "home"), "/home/swe", "rw"),
+        mounts = [(str(jd / "work"), "/work", "rw"), (str(jd / "home"), "/home/proctor", "rw"),
                   (str(winp), "/job/in", "ro"), (str(out), "/job/out", "rw")]
         mounts += self.data_mounts(job, project, checks=False)[0]
         return self.launch(job, project, f"worker-r{job['round']}", "worker", mounts,
@@ -564,7 +564,7 @@ class Supervisor:
         jd = self.jdir(job["id"])
         for sub in ("in", "out", "artifacts"):
             self.mkdir(jd / sub)
-        excl = list(project["runner"].get("export_exclude", [])) + ["/.swe-*"]
+        excl = list(project["runner"].get("export_exclude", [])) + ["/.proctor-*"]
         excl += ["/" + e.strip("/") for e in project["data"]["copy"] + project["data"]["mount_ro"]]
         (jd / "in" / "export-exclude.txt").write_text("\n".join(excl) + "\n")
         (jd / "in" / "task.json").write_text(json.dumps({k: job[k] for k in ("id", "project", "title", "goal", "acceptance")}))
@@ -575,7 +575,7 @@ class Supervisor:
         rc, msg = self.run_blocking(job, project, "clone", "clone",
                                     [(str(self.mirror(project["id"])), "/mirror", "ro"), (str(work), "/work", "rw"),
                                      (str(self.mkdir(jd / "out" / "clone")), "/job/out", "rw")],
-                                    {"SWE_COMMIT": head, "SWE_BRANCH": f"swe/{job['id']}", "HOME": "/tmp"}, timeout=300)
+                                    {"PROCTOR_COMMIT": head, "PROCTOR_BRANCH": f"proctor/{job['id']}", "HOME": "/tmp"}, timeout=300)
         if rc:
             raise Blocked("blocked_environment", f"workspace clone failed (exit {rc}): {msg}")
         self.prepare_mountpoints(project, work)
@@ -633,8 +633,8 @@ class Supervisor:
         c = inspect(job["phase_container"])
         if c is None:
             return self.recover_missing(job, project)
-        if c["labels"].get("swe.attempt") != job["current_attempt"]:
-            self.ev(job["id"], "stale", f"ignoring container {job['phase_container']} from attempt {c['labels'].get('swe.attempt')}")
+        if c["labels"].get("proctor.attempt") != job["current_attempt"]:
+            self.ev(job["id"], "stale", f"ignoring container {job['phase_container']} from attempt {c['labels'].get('proctor.attempt')}")
             docker("rm", "-f", job["phase_container"])
             return self.recover_missing(job, project)
         st = c["state"]
@@ -809,11 +809,11 @@ class Supervisor:
             raise Blocked("failed", f"candidate patch does not apply cleanly to base: {r.stderr[-400:]}")
         tree = git(mirror, "write-tree", env=env).stdout.strip()
         idx.unlink(missing_ok=True)
-        msg = f"swe {job['id']}: {job['title']}\n\nTask: {job['goal'][:1500]}\n\nGenerated by swe-pilot ({job['harness']}/{job['model']}), round {job['round']}.\n"
-        cenv = {"GIT_AUTHOR_NAME": "swe-pilot", "GIT_AUTHOR_EMAIL": "swe-pilot@localhost",
-                "GIT_COMMITTER_NAME": "swe-pilot", "GIT_COMMITTER_EMAIL": "swe-pilot@localhost"}
+        msg = f"proctor {job['id']}: {job['title']}\n\nTask: {job['goal'][:1500]}\n\nGenerated by proctor ({job['harness']}/{job['model']}), round {job['round']}.\n"
+        cenv = {"GIT_AUTHOR_NAME": "proctor", "GIT_AUTHOR_EMAIL": "proctor@localhost",
+                "GIT_COMMITTER_NAME": "proctor", "GIT_COMMITTER_EMAIL": "proctor@localhost"}
         sha = git(mirror, "commit-tree", tree, "-p", job["base_commit"], env=cenv, input=msg).stdout.strip()
-        git(mirror, "update-ref", f"refs/swe/{job['id']}/r{job['round']}", sha)
+        git(mirror, "update-ref", f"refs/proctor/{job['id']}/r{job['round']}", sha)
         return sha, tree
 
     def after_validate(self, job, project, exit_code):
@@ -864,7 +864,7 @@ class Supervisor:
             if pub.get("done"):
                 return self.finish(job["id"], "ready_for_review", "required checks pass on the frozen candidate")
         mirror = self.mirror(project["id"])
-        branch = f"swe/{job['id']}"
+        branch = f"proctor/{job['id']}"
         art = self.mkdir(self.jdir(job["id"]) / "artifacts")
         final = art / "candidate.patch"
         if not final.exists():
@@ -960,7 +960,7 @@ class Supervisor:
                  phase_deadline=None, meta=json.dumps(m))
         self.ev(job["id"], "pause", f"paused for subscription quota ({reason}); {remaining / 60:.0f} min of task time kept")
         if m["pauses"] == 1:
-            self.notify(job["id"], f"⏸ **swe {job['id']}** paused: {reason}. Resumes automatically when the window resets.")
+            self.notify(job["id"], f"⏸ **proctor {job['id']}** paused: {reason}. Resumes automatically when the window resets.")
 
     def step_waiting(self, job):
         m = db.meta(job)
@@ -988,7 +988,7 @@ class Supervisor:
         self.ev(job["id"], "cancel", "cancellation requested")
         if job["state"] == "queued":
             self.upd(job["id"], state="cancelled", reason="cancelled before start", finished_at=now())
-            self.notify(job["id"], f"⏹ **swe {job['id']}** cancelled before start")
+            self.notify(job["id"], f"⏹ **proctor {job['id']}** cancelled before start")
             return
         if job["phase_container"]:
             docker("kill", job["phase_container"], timeout=60)
@@ -998,7 +998,7 @@ class Supervisor:
     def recover(self):
         known = {r["phase_container"] for r in self.conn.execute(
             f"SELECT phase_container FROM jobs WHERE state IN ({','.join('?' * len(ACTIVE))})", ACTIVE) if r["phase_container"]}
-        r = docker("ps", "-a", "--filter", "label=swe.job", "--format", "{{.Names}}")
+        r = docker("ps", "-a", "--filter", "label=proctor.job", "--format", "{{.Names}}")
         for name in r.stdout.split():
             if name not in known:
                 docker("rm", "-f", name)

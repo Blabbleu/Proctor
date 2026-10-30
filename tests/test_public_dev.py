@@ -17,10 +17,10 @@ from unittest import mock
 ROOT = Path(__file__).resolve().parents[1]
 _sandbox = tempfile.TemporaryDirectory()
 atexit.register(_sandbox.cleanup)
-os.environ['SWE_ETC'] = str(Path(_sandbox.name) / 'etc')
-os.environ['SWE_STATE'] = str(Path(_sandbox.name) / 'state')
+os.environ['PROCTOR_ETC'] = str(Path(_sandbox.name) / 'etc')
+os.environ['PROCTOR_STATE'] = str(Path(_sandbox.name) / 'state')
 sys.path.insert(0, str(ROOT))
-from swe_pilot import broker, cli, common, db, harness, orch
+from proctor import broker, cli, common, db, harness, orch
 
 
 class OfflineBehaviorTests(unittest.TestCase):
@@ -53,7 +53,7 @@ class OfflineBehaviorTests(unittest.TestCase):
             common.load_project('example')
 
     def test_watchdog_example_is_toml(self):
-        doc = ast.get_docstring(ast.parse((ROOT / 'bin/swe-devops-check').read_text()))
+        doc = ast.get_docstring(ast.parse((ROOT / 'bin/proctor-devops-check').read_text()))
         assert doc is not None
         example = '[[service]]' + doc.split('    [[service]]', 1)[1]
         self.assertEqual(set(tomllib.loads(example)), {'service', 'http', 'fresh', 'log_errors'})
